@@ -1,8 +1,8 @@
-# Lift Tracker v2.1 — Phone Setup
+# Lift Tracker v2.2 — Phone Setup
 
 ## 1. Put it on GitHub Pages (one time, ~5 min)
 1. Create a new GitHub repo (e.g. `lift-tracker`). Private works for Pages on paid plans; otherwise public is fine — the app contains no personal data, your logs stay on-device and in a **private** gist.
-2. Upload everything in this folder (`index.html`, `sw.js`, `manifest.webmanifest`, `icons/`).
+2. Upload everything in this folder (`index.html`, `styles.css`, the `js/` folder, `sw.js`, `manifest.webmanifest`, `icons/`). Keep the folder structure exactly as-is.
 3. Repo → Settings → Pages → Source: **Deploy from a branch** → Branch: `main`, folder `/ (root)` → Save.
 4. Wait ~1 minute. Your app lives at `https://<username>.github.io/lift-tracker/`.
 

@@ -1,8 +1,18 @@
 /* Lift Tracker service worker — bump CACHE version on every deploy */
-const CACHE = 'lift-tracker-v2.1.0';
+const CACHE = 'lift-tracker-v2.2.0';
 const ASSETS = [
   './',
   './index.html',
+  './styles.css',
+  './js/constants.js',
+  './js/state.js',
+  './js/log.js',
+  './js/chart.js',
+  './js/stats.js',
+  './js/history.js',
+  './js/manage.js',
+  './js/sync.js',
+  './js/main.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png'
