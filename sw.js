@@ -1,5 +1,5 @@
 /* Lift Tracker service worker — bump CACHE version on every deploy */
-const CACHE = 'lift-tracker-v2.2.0';
+const CACHE = 'lift-tracker-v2.3.0';
 const ASSETS = [
   './',
   './index.html',

@@ -22,7 +22,7 @@ function toggleLock() {
 }
 
 function resetCustomForm() {
-  customSel = { name: '', bw: false, p: new Set(), s: new Set() };
+  customSel = { name: '', bw: false, cardio: false, p: new Set(), s: new Set() };
 }
 
 function libSummary(libEx) {
@@ -85,7 +85,7 @@ function renderAddPanel(splitName) {
       '<div class="lib-list">' +
       (matches.length ? matches.map(e =>
         '<div class="lib-row" data-ex="' + esc(e.n) + '" onclick="addFromLib(this)">' +
-        '<span class="lib-name">' + esc(e.n) + (e.bw ? ' <span style="color:#3a8ee8;font-size:8px">BW</span>' : '') + '</span>' +
+        '<span class="lib-name">' + esc(e.n) + (e.bw ? ' <span style="color:#3a8ee8;font-size:8px">BW</span>' : '') + (e.cardio ? ' <span style="color:' + CARDIO_COLOR + ';font-size:8px">CARDIO</span>' : '') + '</span>' +
         '<span class="lib-m">' + esc(libSummary(e)) + '</span></div>').join('')
         : '<div class="empty" style="padding:20px">No matches.</div>') +
       '</div>' +
@@ -96,8 +96,10 @@ function renderAddPanel(splitName) {
       '<input class="input" type="text" id="customName" placeholder="exercise name" maxlength="60"' +
       ' value="' + esc(customSel.name) + '" oninput="customSel.name=this.value" style="font-size:13px;padding:10px 12px;margin-bottom:10px">' +
       '<button class="strain-btn' + (customSel.bw ? ' on' : '') + '" style="border-color:' + (customSel.bw ? '#3a8ee8' : 'rgba(255,255,255,0.1)') + ';color:' + (customSel.bw ? '#3a8ee8' : 'var(--dim)') + ';background:' + (customSel.bw ? 'rgba(58,142,232,0.08)' : 'transparent') + '"' +
-      ' onclick="customSel.bw=!customSel.bw;renderManage()">' + (customSel.bw ? '✓ BODYWEIGHT EXERCISE' : 'BODYWEIGHT EXERCISE?') + '</button>' +
-      '<div class="edit-label" style="margin-top:14px;color:var(--accent)">PRIMARY MUSCLES (required)</div>' +
+      ' onclick="customSel.bw=!customSel.bw;renderManage()">' + (customSel.bw ? '✓ BODYWEIGHT EXERCISE' : 'BODYWEIGHT EXERCISE?') + '</button> ' +
+      '<button class="strain-btn' + (customSel.cardio ? ' on' : '') + '" style="border-color:' + (customSel.cardio ? CARDIO_COLOR : 'rgba(255,255,255,0.1)') + ';color:' + (customSel.cardio ? CARDIO_COLOR : 'var(--dim)') + ';background:' + (customSel.cardio ? CARDIO_COLOR + '15' : 'transparent') + '"' +
+      ' onclick="customSel.cardio=!customSel.cardio;renderManage()">' + (customSel.cardio ? '✓ CARDIO (incline · min · mph)' : 'CARDIO EXERCISE?') + '</button>' +
+      '<div class="edit-label" style="margin-top:14px;color:var(--accent)">PRIMARY MUSCLES' + (customSel.cardio ? ' (optional for cardio)' : ' (required)') + '</div>' +
       '<div class="chip-select">' + CHIP_TAGS.map(([label, tag]) =>
         '<button class="chip-btn' + (customSel.p.has(tag) ? ' sel-p' : '') + '" data-tag="' + tag + '" onclick="toggleChip(this,\'p\')">' + label + '</button>').join('') + '</div>' +
       '<div class="edit-label" style="color:var(--amber)">SECONDARY MUSCLES (optional)</div>' +
@@ -147,12 +149,13 @@ async function saveCustom(el) {
   const splitName = el.dataset.split;
   const name = (document.getElementById('customName')?.value || '').trim();
   if (!name) { showToast('Name required', { color: 'var(--red)' }); return; }
-  if (customSel.p.size === 0) { showToast('Pick at least one primary muscle', { color: 'var(--red)' }); return; }
+  if (customSel.p.size === 0 && !customSel.cardio) { showToast('Pick at least one primary muscle', { color: 'var(--red)' }); return; }
   if (getLibrary().some(e => e.n.toLowerCase() === name.toLowerCase())) {
     showToast('That exercise already exists in the library', { color: 'var(--red)' }); return;
   }
   const ex = { n: name, p: [...customSel.p], s: [...customSel.s], custom: 1 };
   if (customSel.bw) ex.bw = 1;
+  if (customSel.cardio) ex.cardio = 1;
   customExercises.push(ex);
   config[currentProfile][splitName].push(name);
   await saveCustoms(); await saveConfig(); await bumpMeta();

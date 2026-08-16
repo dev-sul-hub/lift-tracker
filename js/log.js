@@ -3,7 +3,7 @@
    ============================================================ */
 function getMapMuscles() {
   const p = new Set(), s = new Set();
-  const splitView = (mapMode === 'split' && filterSplit !== 'All');
+  const splitView = (mapMode === 'split' && filterSplit !== 'All' && filterSplit !== 'Cardio');
   if (splitView) {
     (getSplits()[filterSplit].exercises || []).forEach(ex => {
       const lib = libGet(ex);
@@ -60,11 +60,15 @@ function getLastLogged(exercise) {
   const last = getLastEntry(exercise);
   if (!last) return '<div class="last-logged"><div class="last-logged-label">LAST LOGGED</div><div style="font-size:11px;color:rgba(255,255,255,0.2)">No previous entries</div></div>';
   const color = getSplitColor(exercise);
+  const headline = last.cardio
+    ? last.vert + ' vert ft'
+    : last.weight + ' lb · avg e1RM: ' + last.e1rm;
+  const subline = last.cardio ? cardioDetail(last) + ' · ' + cardioMiles(last) + ' mi' : setsDisplay(last);
   return '<div class="last-logged" style="border-color:' + color + '20">' +
     '<div class="last-logged-label">LAST LOGGED — ' + formatDateFull(last.date) +
       (last.strain ? ' &nbsp;<span class="strain-tag">STRAIN</span>' : '') + '</div>' +
-    '<div class="last-logged-weight" style="color:' + color + '">' + last.weight + ' lb · avg e1RM: ' + last.e1rm + '</div>' +
-    '<div class="last-logged-sets">' + esc(setsDisplay(last)) + '</div>' +
+    '<div class="last-logged-weight" style="color:' + color + '">' + headline + '</div>' +
+    '<div class="last-logged-sets">' + esc(subline) + '</div>' +
     (last.note ? '<div class="history-note">' + esc(last.note) + '</div>' : '') +
   '</div>';
 }
@@ -78,6 +82,10 @@ function captureFormVals() {
     const el = document.getElementById('reps-' + i);
     if (el) formVals.reps[i] = el.value;
   }
+  ['incline', 'minutes', 'mph'].forEach(k => {
+    const el = document.getElementById('c-' + k);
+    if (el) formVals[k] = el.value;
+  });
   const n = document.getElementById('noteInput');
   if (n) formVals.note = n.value;
 }
@@ -86,9 +94,14 @@ function applyPrefill() {
   /* on exercise change: prefill from last session of that exercise */
   if (prefillFor === selectedExercise) return;
   prefillFor = selectedExercise;
-  formVals = { weight: '', reps: {}, strain: false, note: '' };
+  formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '' };
   const last = getLastEntry(selectedExercise);
-  if (last && last.setData) {
+  if (!last) return;
+  if (last.cardio) {
+    formVals.incline = String(last.incline);
+    formVals.minutes = String(last.minutes);
+    formVals.mph = String(last.mph);
+  } else if (last.setData) {
     numSets = Math.min(5, Math.max(1, last.setData.length));
     if (!isBWExercise(selectedExercise)) formVals.weight = String(last.weight);
     last.setData.forEach((s, i) => { formVals.reps[i + 1] = String(s.reps); });
@@ -98,6 +111,7 @@ function applyPrefill() {
 function renderLog(c) {
   applyPrefill();
   const isBW = isBWExercise(selectedExercise);
+  const cardio = isCardio(selectedExercise);
   const today = new Date().toISOString().split('T')[0];
   const splits = getSplits();
 
@@ -112,6 +126,12 @@ function renderLog(c) {
       (a ? 'border-color:' + data.color + ';background:' + data.color + '15;color:' + data.color : '') +
       '">' + name.toUpperCase() + '</button>';
   });
+  {
+    const a = filterSplit === 'Cardio';
+    splitBtns += '<button class="split-btn' + (a ? ' active' : '') + '" onclick="setFilter(\'Cardio\')" style="' +
+      (a ? 'border-color:' + CARDIO_COLOR + ';background:' + CARDIO_COLOR + '15;color:' + CARDIO_COLOR : '') +
+      '">CARDIO</button>';
+  }
   splitBtns += '<button class="gear-btn" onclick="openManage()">⚙ EDIT SPLITS</button>';
 
   let options = getFilteredExercises().map(ex =>
@@ -141,20 +161,29 @@ function renderLog(c) {
     '</div>' +
     renderMuscleMap() +
     getLastLogged(selectedExercise) +
-    '<div style="margin-bottom:20px">' +
-      '<label class="label">BODYWEIGHT (lb)</label>' +
-      '<input class="input" type="number" value="' + (bodyweight || '') + '" id="bwInput" placeholder="enter bodyweight"' +
-        ' onchange="bwChanged(this)" style="font-size:13px;padding:10px 12px">' +
-      (isBW ? '<div class="bw-note">↑ This exercise will use bodyweight for e1RM</div>' : '') +
-    '</div>' +
-    '<div style="margin-bottom:20px">' +
-      '<label class="label">WEIGHT (lb)</label>' +
-      '<input class="input" type="number" id="weightInput" placeholder="' + (isBW ? (bodyweight || 'set bodyweight above') : '60') + '"' +
-        (isBW ? ' value="' + (bodyweight || '') + '" readonly style="opacity:0.5"' : ' value="' + esc(formVals.weight) + '"') +
-        ' oninput="updatePreview()">' +
-    '</div>' +
-    '<div style="margin-bottom:6px"><label class="label">SETS</label><div class="num-sets-row">' + setsBtns + '</div></div>' +
-    '<div class="sets-container"><label class="label">REPS PER SET</label>' + setInputs + '</div>' +
+    (cardio
+      ? '<div style="margin-bottom:20px"><div style="display:flex;gap:10px">' +
+          '<div style="flex:1"><label class="label">INCLINE %</label>' +
+            '<input class="input" type="number" step="0.5" min="0" id="c-incline" placeholder="15" value="' + esc(formVals.incline) + '" oninput="updatePreview()"></div>' +
+          '<div style="flex:1"><label class="label">MINUTES</label>' +
+            '<input class="input" type="number" step="1" min="0" id="c-minutes" placeholder="5" value="' + esc(formVals.minutes) + '" oninput="updatePreview()"></div>' +
+          '<div style="flex:1"><label class="label">SPEED (MPH)</label>' +
+            '<input class="input" type="number" step="0.1" min="0" id="c-mph" placeholder="3.4" value="' + esc(formVals.mph) + '" oninput="updatePreview()"></div>' +
+        '</div></div>'
+      : '<div style="margin-bottom:20px">' +
+          '<label class="label">BODYWEIGHT (lb)</label>' +
+          '<input class="input" type="number" value="' + (bodyweight || '') + '" id="bwInput" placeholder="enter bodyweight"' +
+            ' onchange="bwChanged(this)" style="font-size:13px;padding:10px 12px">' +
+          (isBW ? '<div class="bw-note">↑ This exercise will use bodyweight for e1RM</div>' : '') +
+        '</div>' +
+        '<div style="margin-bottom:20px">' +
+          '<label class="label">WEIGHT (lb)</label>' +
+          '<input class="input" type="number" id="weightInput" placeholder="' + (isBW ? (bodyweight || 'set bodyweight above') : '60') + '"' +
+            (isBW ? ' value="' + (bodyweight || '') + '" readonly style="opacity:0.5"' : ' value="' + esc(formVals.weight) + '"') +
+            ' oninput="updatePreview()">' +
+        '</div>' +
+        '<div style="margin-bottom:6px"><label class="label">SETS</label><div class="num-sets-row">' + setsBtns + '</div></div>' +
+        '<div class="sets-container"><label class="label">REPS PER SET</label>' + setInputs + '</div>') +
     '<div class="strain-row">' +
       '<button class="strain-btn' + (formVals.strain ? ' on' : '') + '" onclick="toggleStrain()">' +
         (formVals.strain ? '⚠ STRAIN FELT' : 'FELT STRAIN?') + '</button>' +
@@ -166,29 +195,31 @@ function renderLog(c) {
       '<input class="input" type="date" id="dateInput" value="' + today + '">' +
     '</div>' +
     '<div class="preview-box" id="previewBox" style="display:none">' +
-      '<div class="preview-label">PREVIEW — AVG ACROSS SETS</div>' +
+      '<div class="preview-label" id="previewCaption">PREVIEW — AVG ACROSS SETS</div>' +
       '<div class="preview-row">' +
-        '<div><div class="preview-metric-label">AVG e1RM</div>' +
-          '<div class="preview-value" style="color:var(--accent)" id="previewE1rm">—</div></div>' +
-        '<div style="text-align:right"><div class="preview-metric-label">TOTAL VOLUME</div>' +
+        '<div><div class="preview-metric-label" id="previewM1Label">AVG e1RM</div>' +
+          '<div class="preview-value" style="color:' + (cardio ? CARDIO_COLOR : 'var(--accent)') + '" id="previewE1rm">—</div></div>' +
+        '<div style="text-align:right"><div class="preview-metric-label" id="previewM2Label">TOTAL VOLUME</div>' +
           '<div class="preview-value" style="color:rgba(255,255,255,0.6)" id="previewVol">—</div></div>' +
       '</div>' +
     '</div>' +
-    '<button class="log-btn" id="logBtn" onclick="addEntry()" disabled>LOG EXERCISE</button>';
+    '<button class="log-btn" id="logBtn" onclick="addEntry()" disabled' + (cardio ? ' style="background:' + CARDIO_COLOR + '"' : '') + '>' +
+    (cardio ? 'LOG CARDIO' : 'LOG EXERCISE') + '</button>';
   updatePreview();
 }
 
 function getFilteredExercises() {
-  const splits = getSplits();
-  if (filterSplit === 'All') return getAllExercises();
+  if (filterSplit === 'Cardio') return getCardioExercises();
+  if (filterSplit === 'All')
+    return [...new Set([...getAllExercises(), ...getCardioExercises()])].sort((a, b) => a.localeCompare(b));
   /* specific split keeps the user's stored order (superset pairing) */
-  return splits[filterSplit].exercises.slice();
+  return getSplits()[filterSplit].exercises.slice();
 }
 
 function setFilter(f) {
   captureFormVals();
   filterSplit = f;
-  if (f !== 'All') mapMode = 'split';
+  mapMode = (f !== 'All' && f !== 'Cardio') ? 'split' : 'exercise';
   const filtered = getFilteredExercises();
   if (!filtered.includes(selectedExercise) && filtered.length > 0) selectedExercise = filtered[0];
   chartExercise = selectedExercise;
@@ -207,10 +238,28 @@ function setNumSets(n) { captureFormVals(); numSets = n; render(); }
 function toggleStrain() { captureFormVals(); formVals.strain = !formVals.strain; render(); }
 
 function updatePreview() {
-  const w = parseFloat(document.getElementById('weightInput')?.value);
   const box = document.getElementById('previewBox');
   const btn = document.getElementById('logBtn');
   if (!box || !btn) return;
+  if (isCardio(selectedExercise)) {
+    const inc = parseFloat(document.getElementById('c-incline')?.value);
+    const min = parseFloat(document.getElementById('c-minutes')?.value);
+    const mph = parseFloat(document.getElementById('c-mph')?.value);
+    const ok = !isNaN(inc) && inc >= 0 && min > 0 && mph > 0;
+    if (ok) {
+      const vert = calcVert(inc, min, mph);
+      const mi = Math.round(mph * (min / 60) * 100) / 100;
+      box.style.display = 'block';
+      document.getElementById('previewCaption').textContent = 'PREVIEW';
+      document.getElementById('previewM1Label').textContent = 'VERTICAL FEET';
+      document.getElementById('previewM2Label').textContent = 'DISTANCE';
+      document.getElementById('previewE1rm').textContent = vert + ' ft';
+      document.getElementById('previewVol').textContent = mi + ' mi';
+      btn.disabled = false;
+    } else { box.style.display = 'none'; btn.disabled = true; }
+    return;
+  }
+  const w = parseFloat(document.getElementById('weightInput')?.value);
   let allFilled = !!w, totalVol = 0, e1rmSum = 0, setCount = 0;
   for (let i = 1; i <= numSets; i++) {
     const el = document.getElementById('reps-' + i);
@@ -233,9 +282,36 @@ function updatePreview() {
 }
 
 async function addEntry() {
-  const w = parseFloat(document.getElementById('weightInput').value);
   const d = document.getElementById('dateInput').value;
-  if (!w || !d) return;
+  if (!d) return;
+  if (isCardio(selectedExercise)) {
+    const inc = parseFloat(document.getElementById('c-incline')?.value);
+    const min = parseFloat(document.getElementById('c-minutes')?.value);
+    const mph = parseFloat(document.getElementById('c-mph')?.value);
+    if (isNaN(inc) || inc < 0 || !(min > 0) || !(mph > 0)) return;
+    const note = (document.getElementById('noteInput')?.value || '').trim();
+    const entry = {
+      id: Date.now(), exercise: selectedExercise, cardio: true,
+      incline: inc, minutes: min, mph: mph,
+      date: d, strain: formVals.strain, note, phase, mod: Date.now()
+    };
+    entry.vert = calcVert(inc, min, mph);
+    const prev = entries.filter(e => e.exercise === selectedExercise && e.cardio);
+    const prevMaxVert = prev.length ? Math.max(...prev.map(e => e.vert || 0)) : null;
+    entries.push(entry);
+    entries.sort((a, b) => a.date.localeCompare(b.date));
+    await saveData(); updateHeader();
+    if (prevMaxVert !== null && entry.vert > prevMaxVert) {
+      showToast('CARDIO PR — ' + selectedExercise + ' · ' + entry.vert + ' vert ft', { color: CARDIO_COLOR, duration: 3200 });
+    } else {
+      showToast('Logged ' + selectedExercise + ' · ' + entry.vert + ' vert ft');
+    }
+    prefillFor = null;
+    render();
+    return;
+  }
+  const w = parseFloat(document.getElementById('weightInput').value);
+  if (!w) return;
   const setData = [];
   for (let i = 1; i <= numSets; i++) {
     const r = parseInt(document.getElementById('reps-' + i).value);

@@ -15,13 +15,22 @@ function renderHistory(c) {
       (a ? 'border-color:' + data.color + ';background:' + data.color + '15;color:' + data.color : '') +
       '">' + name.toUpperCase() + '</button>';
   });
+  {
+    const a = historyFilterSplit === 'Cardio';
+    fBtns += '<button class="split-btn' + (a ? ' active' : '') +
+      '" onclick="setHistFilter(\'Cardio\')" style="' +
+      (a ? 'border-color:' + CARDIO_COLOR + ';background:' + CARDIO_COLOR + '15;color:' + CARDIO_COLOR : '') +
+      '">CARDIO</button>';
+  }
   const loggedExs = [...new Set(entries.map(e => e.exercise))].sort((a, b) => a.localeCompare(b));
   let exOpts = '<option value="All">ALL EXERCISES</option>' + loggedExs.map(ex =>
     '<option value="' + esc(ex) + '"' + (historyFilterExercise === ex ? ' selected' : '') + '>' + esc(ex) + '</option>').join('');
 
   /* filter entries */
   let list = entries.slice();
-  if (historyFilterSplit !== 'All') {
+  if (historyFilterSplit === 'Cardio') {
+    list = list.filter(e => e.cardio);
+  } else if (historyFilterSplit !== 'All') {
     const inSplit = new Set(splits[historyFilterSplit].exercises);
     list = list.filter(e => inSplit.has(e.exercise));
   }
@@ -39,11 +48,14 @@ function renderHistory(c) {
 
   dates.forEach(date => {
     const dayEntries = groups[date];
-    const daySplits = [...new Set(dayEntries.map(e => exToSplit(e.exercise)).filter(Boolean))];
+    const daySplits = [...new Set(dayEntries.filter(e => !e.cardio).map(e => exToSplit(e.exercise)).filter(Boolean))];
+    if (dayEntries.some(e => e.cardio)) daySplits.push('Cardio');
     const totalSets = dayEntries.reduce((s, e) => s + (e.setData ? e.setData.length : 0), 0);
+    const cardioMin = Math.round(dayEntries.reduce((s, e) => s + (e.cardio ? (e.minutes || 0) : 0), 0));
     html += '<div class="day-head"><span class="day-date">' + formatDateFull(date) + '</span>' +
       '<span class="day-meta">' + (daySplits.length ? daySplits.join(' / ').toUpperCase() + ' · ' : '') +
-      dayEntries.length + ' EXERCISES · ' + totalSets + ' SETS</span></div>';
+      dayEntries.length + ' EXERCISES · ' + totalSets + ' SETS' +
+      (cardioMin ? ' · ' + cardioMin + ' MIN CARDIO' : '') + '</span></div>';
     dayEntries.forEach(entry => { html += renderHistoryEntry(entry); });
   });
   c.innerHTML = html;
@@ -54,6 +66,31 @@ function setHistFilter(f) { historyFilterSplit = f; historyFilterExercise = 'All
 function renderHistoryEntry(entry) {
   const color = getSplitColor(entry.exercise);
   const split = getSplitName(entry.exercise);
+  if (editingId === entry.id && entry.cardio) {
+    return '<div class="edit-form">' +
+      '<div class="edit-form-name">' + esc(entry.exercise) +
+        '<span class="history-tag" style="background:' + CARDIO_COLOR + '20;color:' + CARDIO_COLOR + '">CARDIO</span></div>' +
+      '<div class="edit-row">' +
+        '<div><div class="edit-label">INCLINE %</div><input class="edit-input" type="number" step="0.5" id="edit-c-incline" value="' + entry.incline + '" style="width:90px"></div>' +
+        '<div><div class="edit-label">MINUTES</div><input class="edit-input" type="number" step="1" id="edit-c-minutes" value="' + entry.minutes + '" style="width:90px"></div>' +
+        '<div><div class="edit-label">MPH</div><input class="edit-input" type="number" step="0.1" id="edit-c-mph" value="' + entry.mph + '" style="width:90px"></div>' +
+      '</div>' +
+      '<div style="margin:12px 0"><div class="edit-label">DATE</div>' +
+        '<input class="edit-input" type="date" id="edit-date" value="' + entry.date + '" style="width:180px;font-size:11px"></div>' +
+      '<div style="margin-bottom:12px"><div class="edit-label">NOTE</div>' +
+        '<input class="edit-input" type="text" id="edit-note" maxlength="200" value="' + esc(entry.note || '') + '"></div>' +
+      '<div style="margin-bottom:12px"><div class="edit-label">PHASE</div>' +
+        '<select class="edit-input" id="edit-phase" style="width:180px;font-size:11px">' +
+          '<option value=""' + (!entry.phase ? ' selected' : '') + '>—</option>' +
+          Object.entries(PHASE_META).map(([k, m]) =>
+            '<option value="' + k + '"' + (entry.phase === k ? ' selected' : '') + '>' + m.label + '</option>').join('') +
+        '</select></div>' +
+      '<button class="strain-btn' + (entry.strain ? ' on' : '') + '" id="edit-strain" onclick="this.classList.toggle(\'on\')">' +
+        'STRAIN</button>' +
+      '<div class="edit-actions">' +
+        '<button class="save-btn" onclick="saveEdit(' + entry.id + ')">SAVE</button>' +
+        '<button class="cancel-btn" onclick="cancelEdit()">CANCEL</button></div></div>';
+  }
   if (editingId === entry.id) {
     const sd = entry.setData || [{ reps: 0 }];
     let editSets = '';
@@ -88,8 +125,11 @@ function renderHistoryEntry(entry) {
       (split ? '<span class="history-tag" style="background:' + color + '20;color:' + color + '">' + esc(split.toUpperCase()) + '</span>' : '') +
       (entry.strain ? '<span class="strain-tag">STRAIN</span>' : '') +
       (entry.phase && PHASE_META[entry.phase] ? '<span class="history-tag" style="background:' + PHASE_META[entry.phase].color + '15;color:' + PHASE_META[entry.phase].color + '">' + PHASE_META[entry.phase].label + '</span>' : '') + '</div>' +
-    '<div class="history-detail">' + entry.weight + 'lb · avg e1RM: ' + entry.e1rm + '</div>' +
-    '<div class="history-sets">' + esc(setsDisplay(entry)) + '</div>' +
+    (entry.cardio
+      ? '<div class="history-detail">' + esc(cardioDetail(entry)) + '</div>' +
+        '<div class="history-sets">' + (entry.vert || 0) + ' vert ft · ' + cardioMiles(entry) + ' mi</div>'
+      : '<div class="history-detail">' + entry.weight + 'lb · avg e1RM: ' + entry.e1rm + '</div>' +
+        '<div class="history-sets">' + esc(setsDisplay(entry)) + '</div>') +
     (entry.note ? '<div class="history-note">' + esc(entry.note) + '</div>' : '') + '</div>' +
     '<div class="entry-actions">' +
       '<button class="edit-btn" onclick="startEdit(' + entry.id + ')">edit</button>' +
@@ -103,6 +143,24 @@ async function saveEdit(id) {
   const idx = entries.findIndex(e => e.id === id);
   if (idx === -1) return;
   const entry = entries[idx];
+  if (entry.cardio) {
+    const inc = parseFloat(document.getElementById('edit-c-incline')?.value);
+    const min = parseFloat(document.getElementById('edit-c-minutes')?.value);
+    const mph = parseFloat(document.getElementById('edit-c-mph')?.value);
+    const d2 = document.getElementById('edit-date')?.value;
+    if (isNaN(inc) || inc < 0 || !(min > 0) || !(mph > 0) || !d2) return;
+    entry.incline = inc; entry.minutes = min; entry.mph = mph; entry.date = d2;
+    entry.vert = calcVert(inc, min, mph);
+    entry.note = (document.getElementById('edit-note')?.value || '').trim();
+    entry.phase = document.getElementById('edit-phase')?.value || null;
+    entry.strain = document.getElementById('edit-strain')?.classList.contains('on') || false;
+    entry.mod = Date.now();
+    entries.sort((a, b) => a.date.localeCompare(b.date));
+    editingId = null;
+    await saveData(); updateHeader();
+    showToast('Entry updated'); render();
+    return;
+  }
   const w = parseFloat(document.getElementById('edit-weight').value);
   const d = document.getElementById('edit-date').value;
   if (!w || !d) return;

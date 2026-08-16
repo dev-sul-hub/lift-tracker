@@ -22,12 +22,22 @@ function setsInRange(fromISO, toISO) {
   return counts;
 }
 
+function cardioInRange(fromISO, toISO) {
+  let min = 0, vert = 0, n = 0;
+  entries.forEach(e => {
+    if (!e.cardio || e.date < fromISO || e.date > toISO) return;
+    min += e.minutes || 0; vert += e.vert || 0; n++;
+  });
+  return { min: Math.round(min), vert: Math.round(vert), n };
+}
+
 function muscleSetsInRange(fromISO, toISO) {
   /* fractional sets per muscle group; both profiles (tags are profile-independent) */
   const out = {};
   VOL_GROUPS.forEach(g => out[g.key] = 0);
   entries.forEach(e => {
     if (e.date < fromISO || e.date > toISO) return;
+    if (e.cardio) return; /* steady-state cardio isn't a hard set */
     const lib = libGet(e.exercise);
     if (!lib) return;
     const sets = e.setData ? e.setData.length : (e.sets || 0);
@@ -111,6 +121,7 @@ function renderStats(c) {
     const d = dayMap[e.date] = dayMap[e.date] || { exs: new Set(), phases: {}, splits: new Set() };
     d.exs.add(e.exercise);
     if (e.phase) d.phases[e.phase] = (d.phases[e.phase] || 0) + 1;
+    if (e.cardio) { d.splits.add('Cardio'); return; }
     const sp = exToSplit(e.exercise);
     if (sp) d.splits.add(sp);
   });
@@ -167,6 +178,7 @@ function renderStats(c) {
     watchSub = 'cut since ' + formatDateFull(phaseSince) + ' · flags lifts more than 10% below their pre-cut best — some strength dip is normal in a deficit';
     let held = 0, total = 0;
     getAllExercises().forEach(ex => {
+      if (isCardio(ex)) return;
       const data = entries.filter(e => e.exercise === ex).sort((a, b) => a.date.localeCompare(b.date));
       const inPhase = data.filter(e => e.date >= phaseSince);
       const baseline = prePhaseBaseline(ex);
@@ -193,6 +205,7 @@ function renderStats(c) {
     watchTitle = 'DRIFT WATCH';
     watchSub = 'maintenance since ' + formatDateFull(phaseSince) + ' · holding steady is the goal — flags only lifts more than 5% below their best';
     getAllExercises().forEach(ex => {
+      if (isCardio(ex)) return;
       const data = entries.filter(e => e.exercise === ex).sort((a, b) => a.date.localeCompare(b.date));
       if (data.length < 5) return;
       const last4 = data.slice(-4);
@@ -212,6 +225,7 @@ function renderStats(c) {
     watchTitle = 'STALL WATCH';
     watchSub = 'bulking since ' + formatDateFull(phaseSince) + ' · exercises with 5+ sessions whose best recent e1RM hasn\'t beaten an older PR — informational, not a problem during a deliberate ramp-up';
     getAllExercises().forEach(ex => {
+      if (isCardio(ex)) return;
       const data = entries.filter(e => e.exercise === ex).sort((a, b) => a.date.localeCompare(b.date));
       if (data.length < 5) return;
       const last4 = data.slice(-4), prior = data.slice(0, -4);
@@ -232,10 +246,37 @@ function renderStats(c) {
     if (!stallHTML) stallHTML = '<div class="empty" style="padding:24px">Nothing stalled. Keep going.</div>';
   }
 
+  /* ---- weekly cardio (only if any cardio logged) ---- */
+  let cardioHTML = '';
+  if (entries.some(e => e.cardio)) {
+    const cc = cardioInRange(isoDaysAgo(6), today);
+    const cp = cardioInRange(isoDaysAgo(13), isoDaysAgo(7));
+    const rows = [
+      ['MINUTES', cc.min, cp.min, ' min'],
+      ['VERT FT', cc.vert, cp.vert, ' ft']
+    ];
+    const maxRow = Math.max(1, cc.min, cc.vert / 40); /* rough shared scale: 40 ft ≈ 1 min of climbing */
+    let rowsHTML = '';
+    rows.forEach(([label, n, p, unit]) => {
+      const scaled = label === 'VERT FT' ? n / 40 : n;
+      const w = Math.min(100, Math.round((scaled / maxRow) * 100));
+      const diff = n - p;
+      const diffStr = diff === 0 ? '±0' : (diff > 0 ? '+' + diff : String(diff));
+      rowsHTML += '<div class="vol-row">' +
+        '<span class="vol-name" style="color:' + CARDIO_COLOR + '">' + label + '</span>' +
+        '<div class="vol-bar-wrap"><div class="vol-bar" style="width:' + w + '%;background:' + CARDIO_COLOR + '"></div></div>' +
+        '<span class="vol-count">' + n + unit + ' <span style="color:rgba(255,255,255,0.25)">(' + diffStr + ')</span></span></div>';
+    });
+    cardioHTML = '<div class="stats-section"><div class="stats-title">WEEKLY CARDIO — LAST 7 DAYS</div>' +
+      '<div class="stats-sub">' + cc.n + ' session' + (cc.n === 1 ? '' : 's') + ' this week vs ' + cp.n + ' last · vs previous 7 days in parentheses</div>' +
+      rowsHTML + '</div>';
+  }
+
   c.innerHTML =
     '<div class="stats-section"><div class="stats-title" style="display:flex;align-items:center;gap:8px"><span style="flex:1">' + volTitle + '</span>' + volToggle + '</div>' +
     '<div class="stats-sub">' + volSub + '</div>' +
     volHTML + '</div>' +
+    cardioHTML +
     '<div class="stats-section"><div class="stats-title">CONSISTENCY — LAST 17 WEEKS</div>' +
     '<div class="stats-sub">color = phase (' +
       Object.values(PHASE_META).map(m => '<span style="color:' + m.color + '">' + m.label.toLowerCase() + '</span>').join(' / ') +

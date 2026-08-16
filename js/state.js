@@ -21,7 +21,7 @@ let config = null;              /* per-profile split layout */
 let customExercises = [];
 let mapMode = 'exercise';       /* 'exercise' | 'split' */
 let prefillFor = null;          /* which exercise the form is currently prefilled for */
-let formVals = { weight: '', reps: {}, strain: false, note: '' };
+let formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '' };
 let pinnedTip = null;
 let chartTipData = [];
 let pendingDelete = null;
@@ -29,7 +29,7 @@ let manageUnlocked = false;
 let addingTo = null;            /* split currently in "add exercise" mode */
 let addSearch = '';
 let customFormOpen = false;
-let customSel = { name: '', bw: false, p: new Set(), s: new Set() };
+let customSel = { name: '', bw: false, cardio: false, p: new Set(), s: new Set() };
 let statsVolMode = 'muscle';    /* 'muscle' | 'split' */
 let historyFilterSplit = 'All';
 let historyFilterExercise = 'All';
@@ -76,6 +76,28 @@ function libGet(name) {
 function isBWExercise(exercise) {
   const e = libGet(exercise);
   return !!(e && e.bw);
+}
+
+function isCardio(exercise) {
+  const e = libGet(exercise);
+  return !!(e && e.cardio);
+}
+
+function getCardioExercises() {
+  return getLibrary().filter(e => e.cardio).map(e => e.n).sort((a, b) => a.localeCompare(b));
+}
+
+/* vertical climb in feet: distance × grade */
+function calcVert(incline, minutes, mph) {
+  return Math.round(mph * 5280 * (minutes / 60) * (incline / 100));
+}
+
+function cardioDetail(e) {
+  return e.incline + '% · ' + e.mph + ' mph · ' + e.minutes + ' min';
+}
+
+function cardioMiles(e) {
+  return Math.round(e.mph * (e.minutes / 60) * 100) / 100;
 }
 
 function calcE1RM(w, r) {
@@ -130,6 +152,14 @@ function setsShort(entry) {
 }
 
 function migrateEntry(entry) {
+  if (entry.cardio) {
+    entry.strain = !!entry.strain;
+    entry.note = entry.note || '';
+    entry.phase = entry.phase || null;
+    entry.mod = entry.mod || entry.id || Date.now();
+    entry.vert = calcVert(entry.incline || 0, entry.minutes || 0, entry.mph || 0);
+    return entry;
+  }
   if (!entry.setData && entry.reps !== undefined && entry.sets !== undefined) {
     entry.setData = [];
     for (let i = 0; i < (entry.sets || 3); i++) entry.setData.push({ reps: entry.reps });
@@ -192,6 +222,7 @@ function getExerciseSplit(exercise) {
 }
 
 function getSplitColor(exercise) {
+  if (isCardio(exercise)) return CARDIO_COLOR;
   const splits = getExerciseSplit(exercise);
   if (splits.length > 0) return SPLIT_COLORS[splits[0]];
   for (const p of ['home', 'gym']) {
@@ -203,6 +234,7 @@ function getSplitColor(exercise) {
 }
 
 function getSplitName(exercise) {
+  if (isCardio(exercise)) return 'Cardio';
   const splits = getExerciseSplit(exercise);
   if (splits.length > 0) return splits.join(' / ');
   for (const p of ['home', 'gym']) {
@@ -325,7 +357,7 @@ function bwChanged(el) {
 }
 
 function initProfile() {
-  const exs = getAllExercises();
+  const exs = [...new Set([...getAllExercises(), ...getCardioExercises()])];
   if (!exs.includes(selectedExercise)) selectedExercise = exs[0] || '';
   if (!exs.includes(chartExercise)) chartExercise = exs[0] || '';
   filterSplit = 'All';

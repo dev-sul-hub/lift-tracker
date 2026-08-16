@@ -3,9 +3,12 @@
    ============================================================ */
 function renderChart(c) {
   pinnedTip = null;
-  const allExs = getAllExercises();
+  const allExs = [...new Set([...getAllExercises(), ...getCardioExercises()])].sort((a, b) => a.localeCompare(b));
   const logged = [...new Set(entries.map(e => e.exercise))];
   const archived = logged.filter(ex => !allExs.includes(ex)).sort((a, b) => a.localeCompare(b));
+  const cardio = isCardio(chartExercise);
+  if (cardio && !['vert', 'duration', 'speed'].includes(chartMetric)) chartMetric = 'vert';
+  if (!cardio && !['e1rm', 'volume', 'weight'].includes(chartMetric)) chartMetric = 'e1rm';
   let options = allExs.map(ex => {
     const count = entries.filter(e => e.exercise === ex).length;
     return '<option value="' + esc(ex) + '"' + (ex === chartExercise ? ' selected' : '') + '>' +
@@ -20,9 +23,10 @@ function renderChart(c) {
   }
   const color = getSplitColor(chartExercise);
   const splitName = getSplitName(chartExercise);
-  let metricBtns = [
-    { key: 'e1rm', label: 'e1RM' }, { key: 'volume', label: 'VOLUME' }, { key: 'weight', label: 'WEIGHT' }
-  ].map(m => {
+  let metricBtns = (cardio
+    ? [{ key: 'vert', label: 'VERT FT' }, { key: 'duration', label: 'MINUTES' }, { key: 'speed', label: 'MPH' }]
+    : [{ key: 'e1rm', label: 'e1RM' }, { key: 'volume', label: 'VOLUME' }, { key: 'weight', label: 'WEIGHT' }]
+  ).map(m => {
     const a = chartMetric === m.key;
     return '<button class="metric-btn" onclick="setMetric(\'' + m.key + '\')" style="' +
       (a ? 'border-color:' + color + ';background:' + color + '15;color:' + color : '') +
@@ -32,12 +36,20 @@ function renderChart(c) {
   let chartHTML = '', statsHTML = '';
   if (data.length > 0) {
     chartHTML = '<div class="chart-box">' + buildSVGChart(data, chartMetric, color) + '</div>';
-    const pr = Math.max(...data.map(e => e.e1rm));
     const latest = data[data.length - 1];
-    statsHTML = '<div class="stats-grid">' +
-      '<div class="stat-card"><div class="stat-label">PR AVG e1RM</div><div class="stat-value">' + pr + ' lb</div></div>' +
-      '<div class="stat-card"><div class="stat-label">LATEST</div><div class="stat-value">' + latest.weight + 'lb · ' + esc(setsShort(latest)) + '</div></div>' +
-      '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div></div>';
+    if (cardio) {
+      const prVert = Math.max(...data.map(e => e.vert || 0));
+      statsHTML = '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-label">PR VERT FT</div><div class="stat-value">' + prVert + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">LATEST</div><div class="stat-value">' + latest.minutes + 'min @ ' + latest.incline + '%</div></div>' +
+        '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div></div>';
+    } else {
+      const pr = Math.max(...data.map(e => e.e1rm));
+      statsHTML = '<div class="stats-grid">' +
+        '<div class="stat-card"><div class="stat-label">PR AVG e1RM</div><div class="stat-value">' + pr + ' lb</div></div>' +
+        '<div class="stat-card"><div class="stat-label">LATEST</div><div class="stat-value">' + latest.weight + 'lb · ' + esc(setsShort(latest)) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div></div>';
+    }
   } else {
     chartHTML = '<div class="empty">No data for ' + esc(chartExercise) + ' yet.<br><span style="font-size:11px">Log some sets to see your progress.</span></div>';
   }
@@ -56,7 +68,10 @@ function buildSVGChart(data, metric, color) {
   const W = 620, H = 360;
   const pad = { top: 90, right: 30, bottom: 40, left: 55 };
   const cw = W - pad.left - pad.right, ch = H - pad.top - pad.bottom;
-  const values = data.map(d => metric === 'e1rm' ? d.e1rm : metric === 'volume' ? d.volume : d.weight);
+  const cardio = data.length > 0 && !!data[0].cardio;
+  const values = data.map(d => cardio
+    ? (metric === 'vert' ? (d.vert || 0) : metric === 'duration' ? d.minutes : d.mph)
+    : (metric === 'e1rm' ? d.e1rm : metric === 'volume' ? d.volume : d.weight));
   let minV = Math.min(...values), maxV = Math.max(...values);
   if (minV === maxV) { minV -= 10; maxV += 10; }
   const rv = maxV - minV, pv = rv * 0.1; minV -= pv; maxV += pv;
@@ -65,7 +80,8 @@ function buildSVGChart(data, metric, color) {
   let gridSVG = '';
   for (let i = 0; i <= 5; i++) {
     const gy = pad.top + (i / 5) * ch;
-    const gv = Math.round(maxV - (i / 5) * (maxV - minV));
+    const raw = maxV - (i / 5) * (maxV - minV);
+    const gv = (maxV - minV) < 10 ? Math.round(raw * 10) / 10 : Math.round(raw);
     gridSVG += '<line x1="' + pad.left + '" y1="' + gy + '" x2="' + (W - pad.right) + '" y2="' + gy + '" stroke="rgba(255,255,255,0.06)" stroke-dasharray="3,3"/>';
     gridSVG += '<text x="' + (pad.left - 8) + '" y="' + (gy + 3) + '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="end">' + gv.toLocaleString() + '</text>';
   }
@@ -84,13 +100,23 @@ function buildSVGChart(data, metric, color) {
     if (d.strain) dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(values[i]).toFixed(1) + '" r="7" fill="none" stroke="var(--red)" stroke-width="1.5"/>';
   });
   let prLine = '';
-  if (metric === 'e1rm') {
+  if (metric === 'e1rm' || metric === 'vert') {
     const pr = Math.max(...values), pry = y(pr);
     prLine = '<line x1="' + pad.left + '" y1="' + pry + '" x2="' + (W - pad.right) + '" y2="' + pry + '" stroke="rgba(46,204,113,0.4)" stroke-dasharray="4,4"/>' +
-      '<text x="' + (W - pad.right + 4) + '" y="' + (pry + 3) + '" fill="rgba(46,204,113,0.6)" font-size="9">PR Avg: ' + pr + '</text>';
+      '<text x="' + (W - pad.right + 4) + '" y="' + (pry + 3) + '" fill="rgba(46,204,113,0.6)" font-size="9">' + (metric === 'vert' ? 'PR Vert: ' : 'PR Avg: ') + pr + '</text>';
   }
   chartTipData = data.map((d, i) => {
     const val = values[i];
+    if (cardio) {
+      const ml = metric === 'vert' ? 'Vert: ' + (d.vert || 0) + ' ft' : metric === 'duration' ? 'Duration: ' + d.minutes + ' min' : 'Speed: ' + d.mph + ' mph';
+      return {
+        date: formatDateFull(d.date),
+        detail: cardioDetail(d) + (d.strain ? ' · STRAIN' : ''),
+        value: ml,
+        sets: (d.vert || 0) + ' vert ft · ' + cardioMiles(d) + ' mi',
+        cx: x(i), cy: y(val)
+      };
+    }
     const ml = metric === 'e1rm' ? 'Avg e1RM: ' + d.e1rm : metric === 'volume' ? 'Vol: ' + d.volume.toLocaleString() : 'Weight: ' + d.weight;
     return {
       date: formatDateFull(d.date),

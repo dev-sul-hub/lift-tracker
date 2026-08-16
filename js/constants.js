@@ -1,7 +1,7 @@
 /* ============================================================
    SECTION: CONFIG & CONSTANTS
    ============================================================ */
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 
 const SPLIT_ORDER = ['Push', 'Pull', 'Legs', 'Full Upper', 'Legs + Arms', 'Abs'];
 const SPLIT_COLORS = {
@@ -239,8 +239,13 @@ const LIB = [
   { n: 'Ab Wheel Rollout', bw: 1, p: ['abs'], s: ['lats','obliques'] },
   { n: 'Pallof Press', p: ['obliques','abs'], s: [] },
   { n: 'Dead Bug', bw: 1, p: ['abs'], s: [] },
-  { n: 'Mountain Climber', bw: 1, p: ['abs'], s: ['obliques','quads'] }
+  { n: 'Mountain Climber', bw: 1, p: ['abs'], s: ['obliques','quads'] },
+  /* cardio (logged as incline % · minutes · mph; headline metric = vertical feet) */
+  { n: 'Incline Walk', cardio: 1, p: ['quads','glute_max','calves_gastro'], s: ['hamstrings','calves_soleus','tibialis'] },
+  { n: 'Treadmill Run', cardio: 1, p: ['quads','calves_gastro','hamstrings'], s: ['glute_max','calves_soleus','tibialis'] }
 ];
+
+const CARDIO_COLOR = '#e83a8e';
 
 /* seed split layout — used only on first run, then stored config takes over */
 const SEED = {
