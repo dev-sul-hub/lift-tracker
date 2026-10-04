@@ -15,6 +15,16 @@ function ghHeaders() {
 function openSync() {
   document.getElementById('syncOverlay').classList.add('open');
   renderSync('');
+  /* async, so it fills in just after the panel paints */
+  getSafety().then(snap => {
+    const row = document.getElementById('safetyRow');
+    if (!row || !snap) return;
+    row.innerHTML = '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.08)">' +
+      '<div class="map-hint" style="margin-bottom:8px">Snapshot from ' + esc(new Date(snap.at).toLocaleString()) +
+      ' — ' + snap.payload.entries.length + ' entries' + (snap.reason ? ' (' + esc(snap.reason) + ')' : '') + '</div>' +
+      '<button class="data-btn" style="border-color:rgba(232,184,58,0.35);color:rgba(232,184,58,0.85)"' +
+      ' onclick="restoreSafety()">⟲ RESTORE SNAPSHOT</button></div>';
+  });
 }
 function closeSync() {
   document.getElementById('syncOverlay').classList.remove('open');
@@ -40,6 +50,7 @@ function renderSync(status, isError) {
     '<button class="log-btn" onclick="syncNow()" ' + (syncBusy ? 'disabled' : '') + '>' +
     (syncBusy ? 'SYNCING…' : 'SYNC NOW') + '</button>' +
     '<div class="map-hint" style="margin-top:12px">Last sync: ' + esc(last) + '</div>' +
+    '<div id="safetyRow"></div>' +
     (status ? '<div class="map-hint" style="margin-top:8px;color:' + (isError ? 'var(--red)' : 'var(--green)') + ';font-size:10px">' + esc(status) + '</div>' : '');
 }
 
@@ -63,15 +74,40 @@ function mergeSync(remote) {
   });
   entries = [...local.values()].sort((a, b) => a.date.localeCompare(b.date));
   tombstones = [...tomb.entries()].map(([id, mod]) => ({ id, mod })).slice(-500);
+  /* weigh-ins: per-date merge, newest mod wins, tombstoned deletes */
+  const bwLocal = new Map(bwLog.map(r => [r.date, r]));
+  (remote.bwLog || []).forEach(rr => {
+    if (!rr || !rr.date || !(rr.w > 0)) return;
+    const l = bwLocal.get(rr.date);
+    if (!l || (rr.mod || 0) > (l.mod || 0)) bwLocal.set(rr.date, rr);
+  });
+  const bwTomb = new Map(bwTombstones.map(t => [t.date, t.mod]));
+  (remote.bwTombstones || []).forEach(t => {
+    if (!t || !t.date) return;
+    if (!bwTomb.has(t.date) || t.mod > bwTomb.get(t.date)) bwTomb.set(t.date, t.mod);
+  });
+  bwTomb.forEach((mod, date) => {
+    const r = bwLocal.get(date);
+    if (r && mod >= (r.mod || 0)) bwLocal.delete(date);
+  });
+  bwLog = [...bwLocal.values()].sort((a, b) => a.date.localeCompare(b.date));
+  bwTombstones = [...bwTomb.entries()].map(([date, mod]) => ({ date, mod })).slice(-300);
+  bodyweight = latestBw();
   /* scalar state: newer side wins wholesale */
   if ((remote.metaMod || 0) > metaMod) {
     if (remote.config && remote.config.home && remote.config.gym) config = remote.config;
+    if (remote.alts && typeof remote.alts === 'object') alts = { home: remote.alts.home || {}, gym: remote.alts.gym || {} };
     if (Array.isArray(remote.customExercises)) customExercises = remote.customExercises;
-    if (remote.phase && PHASE_META[remote.phase.phase]) {
-      phase = remote.phase.phase;
-      phaseSince = remote.phase.since || phaseSince;
+    if (remote.phase) {
+      if (Array.isArray(remote.phase.phases) && remote.phase.phases.filter(validSeg).length) {
+        phases = remote.phase.phases;
+      } else if (PHASE_META[remote.phase.phase]) {
+        phases = [{ phase: remote.phase.phase, since: remote.phase.since || phaseSince }];
+      }
+      normalizePhases();
     }
-    if (remote.bodyweight) bodyweight = remote.bodyweight;
+    if (remote.bwGoal !== undefined) bwGoal = remote.bwGoal > 0 ? remote.bwGoal : null;
+    if (!bwLog.length && remote.bodyweight) bodyweight = remote.bodyweight;
     metaMod = remote.metaMod;
   }
   return { pulled, deleted };
@@ -79,6 +115,7 @@ function mergeSync(remote) {
 
 async function persistAll() {
   await saveData(); await saveTombstones(); await saveConfig(); await saveCustoms(); await savePhase();
+  await saveBwLog(); await saveBwTombstones(); await saveBwGoal(); await saveAlts();
   try { if (bodyweight) await store.set('lift-tracker-bodyweight', String(bodyweight)); } catch (e) {}
   try { await store.set('lift-tracker-metamod', String(metaMod)); } catch (e) {}
 }
@@ -141,6 +178,7 @@ async function syncNow() {
     }
     /* merge + persist + push */
     const { pulled, deleted } = mergeSync(remote);
+    await restampEntries();
     await persistAll();
     renderSync('Pushing…');
     const pr = await fetch(GH_API + '/gists/' + syncCfg.gistId, {
@@ -167,8 +205,9 @@ function buildSyncPayload() {
     version: APP_VERSION,
     exportDate: new Date().toISOString(),
     entries, tombstones, bodyweight,
-    config, customExercises,
-    phase: { phase, since: phaseSince },
+    config, customExercises, alts,
+    phase: { phase, since: phaseSince, phases },
+    bwLog, bwTombstones, bwGoal,
     metaMod
   };
 }
@@ -201,14 +240,39 @@ async function importData(event) {
     const text = await file.text();
     const data = JSON.parse(text);
     if (data.entries && Array.isArray(data.entries)) {
+      await saveSafety('before import of ' + (file.name || 'a backup'));
       entries = data.entries.map(migrateEntry).sort((a, b) => a.date.localeCompare(b.date));
       if (data.bodyweight) { bodyweight = data.bodyweight; await store.set('lift-tracker-bodyweight', String(bodyweight)); }
       if (data.config && data.config.home && data.config.gym) { config = data.config; await saveConfig(); }
       if (Array.isArray(data.customExercises)) { customExercises = data.customExercises; await saveCustoms(); }
-      if (data.phase && PHASE_META[data.phase.phase]) {
-        phase = data.phase.phase; phaseSince = data.phase.since || phaseSince;
+      if (data.alts && typeof data.alts === 'object') { alts = { home: data.alts.home || {}, gym: data.alts.gym || {} }; await saveAlts(); }
+      if (data.phase) {
+        if (Array.isArray(data.phase.phases) && data.phase.phases.filter(validSeg).length) {
+          phases = data.phase.phases;
+        } else if (PHASE_META[data.phase.phase]) {
+          /* legacy backup: rebuild segments from the entry tags it carries,
+             then append its stored current phase if it starts later */
+          const inf = inferPhasesFromEntries();
+          phases = inf.length ? inf : [];
+          const last = phases[phases.length - 1];
+          const since = data.phase.since || isoToday();
+          if (!last || since > last.since) phases.push({ phase: data.phase.phase, since });
+        }
+        normalizePhases();
         await savePhase(); updatePhaseUI();
       }
+      if (Array.isArray(data.bwLog)) {
+        bwLog = data.bwLog.filter(r => r && r.date && r.w > 0);
+        sortBwLog(); await saveBwLog();
+      } else if (data.bodyweight > 0 && !bwLog.length) {
+        const d = entries.length ? entries[entries.length - 1].date : isoToday();
+        bwLog = [{ date: d, w: data.bodyweight, mod: Date.now() }];
+        await saveBwLog();
+      }
+      if (Array.isArray(data.bwTombstones)) { bwTombstones = data.bwTombstones; await saveBwTombstones(); }
+      if (data.bwGoal !== undefined) { bwGoal = data.bwGoal > 0 ? data.bwGoal : null; await saveBwGoal(); }
+      bodyweight = latestBw();
+      await restampEntries();
       tombstones = Array.isArray(data.tombstones) ? data.tombstones : [];
       await saveTombstones(); await bumpMeta();
       await saveData();
@@ -221,10 +285,41 @@ async function importData(event) {
 }
 
 async function clearAllData() {
-  if (!confirm('Delete all entries? This cannot be undone and will propagate to synced devices. (Splits and custom exercises are kept.)')) return;
+  if (!confirm('Delete all ' + entries.length + ' entries? This propagates to synced devices.\n\n' +
+    'A local snapshot is kept — RESTORE SNAPSHOT appears in the SYNC panel afterwards. ' +
+    '(Splits, alternates and custom exercises are kept either way.)')) return;
+  await saveSafety('before CLEAR ALL of ' + entries.length + ' entries');
   const now = Date.now();
   entries.forEach(e => tombstones.push({ id: e.id, mod: now }));
   entries = [];
   await saveTombstones(); await saveData();
-  updateHeader(); showToast('All data cleared'); render();
+  updateHeader();
+  showToast('All data cleared — snapshot kept, see SYNC to restore', { color: 'var(--amber)', duration: 4200 });
+  render();
+}
+
+/* ---- restore the pre-destruction snapshot ---- */
+async function restoreSafety() {
+  const snap = await getSafety();
+  if (!snap) { showToast('No snapshot available', { color: 'var(--red)' }); return; }
+  const p = snap.payload;
+  if (!confirm('Restore the snapshot taken ' + new Date(snap.at).toLocaleString() + '?\n\n' +
+    p.entries.length + ' entries will replace the current ' + entries.length + '.')) return;
+  entries = p.entries.map(migrateEntry).sort((a, b) => a.date.localeCompare(b.date));
+  /* drop tombstones for restored ids, or the next sync deletes them again */
+  const ids = new Set(entries.map(e => e.id));
+  tombstones = (p.tombstones || []).filter(t => !ids.has(t.id));
+  if (p.config && p.config.home && p.config.gym) config = p.config;
+  if (p.alts) alts = { home: p.alts.home || {}, gym: p.alts.gym || {} };
+  if (Array.isArray(p.customExercises)) customExercises = p.customExercises;
+  if (Array.isArray(p.bwLog)) bwLog = p.bwLog;
+  if (p.bwGoal !== undefined) bwGoal = p.bwGoal > 0 ? p.bwGoal : null;
+  if (p.phase && Array.isArray(p.phase.phases) && p.phase.phases.filter(validSeg).length) phases = p.phase.phases;
+  normalizePhases();
+  sortBwLog(); bodyweight = latestBw();
+  await restampEntries();
+  await persistAll(); await bumpMeta();
+  initProfile(); updateHeader(); updatePhaseUI(); render();
+  showToast('Restored ' + entries.length + ' entries — SYNC to push to your other device', { duration: 4000 });
+  renderSync('Restored from snapshot. Sync now to propagate.');
 }

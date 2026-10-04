@@ -39,6 +39,9 @@ function renderHistory(c) {
   /* group by date desc */
   const groups = {};
   list.forEach(e => { (groups[e.date] = groups[e.date] || []).push(e); });
+  /* unfiltered view also shows days that only have a weigh-in */
+  const unfiltered = (historyFilterSplit === 'All' && historyFilterExercise === 'All');
+  if (unfiltered) bwLog.forEach(r => { groups[r.date] = groups[r.date] || []; });
   const dates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
 
   let html = '<div class="hist-filters"><div class="split-filters">' + fBtns + '</div>' +
@@ -52,16 +55,95 @@ function renderHistory(c) {
     if (dayEntries.some(e => e.cardio)) daySplits.push('Cardio');
     const totalSets = dayEntries.reduce((s, e) => s + (e.setData ? e.setData.length : 0), 0);
     const cardioMin = Math.round(dayEntries.reduce((s, e) => s + (e.cardio ? (e.minutes || 0) : 0), 0));
+    const meta = dayEntries.length
+      ? (daySplits.length ? daySplits.join(' / ').toUpperCase() + ' · ' : '') +
+        dayEntries.length + ' EXERCISES · ' + totalSets + ' SETS' +
+        (cardioMin ? ' · ' + cardioMin + ' MIN CARDIO' : '')
+      : 'WEIGH-IN ONLY';
     html += '<div class="day-head"><span class="day-date">' + formatDateFull(date) + '</span>' +
-      '<span class="day-meta">' + (daySplits.length ? daySplits.join(' / ').toUpperCase() + ' · ' : '') +
-      dayEntries.length + ' EXERCISES · ' + totalSets + ' SETS' +
-      (cardioMin ? ' · ' + cardioMin + ' MIN CARDIO' : '') + '</span></div>';
+      '<span class="day-meta">' + meta + ' · ' + bwDayTag(date) + '</span></div>';
+    if (editingBwDate === date) html += renderDayBodyweight(date);
     dayEntries.forEach(entry => { html += renderHistoryEntry(entry); });
   });
   c.innerHTML = html;
 }
 
 function setHistFilter(f) { historyFilterSplit = f; historyFilterExercise = 'All'; render(); }
+
+/* compact weigh-in readout for the day header: value opens an editor,
+   absence offers to add one — one line instead of a row per day */
+function bwDayTag(date) {
+  const rec = bwLog.find(r => r.date === date);
+  if (rec) {
+    return '<a href="javascript:void(0)" onclick="editingBwDate=\'' + date + '\';render()"' +
+      ' style="color:' + BW_COLOR + ';text-decoration:none;font-weight:600">' + rec.w + ' LB</a>';
+  }
+  return '<a href="javascript:void(0)" onclick="editingBwDate=\'' + date + '\';render()"' +
+    ' style="color:rgba(255,255,255,0.22);text-decoration:none">+ WEIGH-IN</a>';
+}
+
+/* ---- inline editor, shown only for the day being edited ---- */
+function renderDayBodyweight(date) {
+  const rec = bwLog.find(r => r.date === date);
+  if (editingBwDate === date) {
+    return '<div class="history-entry" style="border-color:' + BW_COLOR + '35">' +
+      '<div style="flex:1">' +
+        '<div class="history-name" style="color:' + BW_COLOR + '">BODYWEIGHT' +
+          '<span class="history-tag" style="background:' + BW_COLOR + '20;color:' + BW_COLOR + '">WEIGH-IN</span></div>' +
+        '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+          '<input class="edit-input" id="hist-bw-' + date + '" type="number" step="0.1" style="width:96px"' +
+            ' value="' + (rec ? rec.w : '') + '" placeholder="lb">' +
+          '<button class="save-btn" style="padding:6px 12px;font-size:10px" onclick="histBwSave(\'' + date + '\')">SAVE</button>' +
+          '<button class="cancel-btn" style="padding:6px 12px;font-size:10px" onclick="editingBwDate=null;render()">CANCEL</button>' +
+          (rec ? '<button class="del-btn" onclick="histBwDelete(\'' + date + '\')">×</button>' : '') +
+        '</div></div></div>';
+  }
+  return '';
+}
+
+async function histBwSave(date) {
+  const w = parseFloat(document.getElementById('hist-bw-' + date)?.value);
+  if (!(w > 0)) { showToast('Enter a weight', { color: 'var(--red)' }); return; }
+  const n = await setBodyweightOn(date, w);
+  editingBwDate = null;
+  showToast(w + ' lb on ' + formatDateFull(date) +
+    (n ? ' — ' + n + ' bodyweight ' + (n === 1 ? 'entry' : 'entries') + ' recalculated' : ''),
+    { duration: n ? 3200 : 2200 });
+  updateHeader(); render();
+}
+
+async function histBwDelete(date) {
+  const n = await deleteBodyweightOn(date);
+  editingBwDate = null;
+  showToast('Removed weigh-in for ' + formatDateFull(date) + (n ? ' — ' + n + ' recalculated' : ''),
+    { color: 'var(--amber)', duration: n ? 3200 : 2200 });
+  updateHeader(); render();
+}
+
+/* PHASE select for the edit forms — AUTO derives from phase history,
+   anything else pins the tag so restamping leaves it alone */
+function phaseSelectHTML(entry) {
+  const auto = !entry.phaseLocked;
+  const derived = phaseForDate(entry.date);
+  const autoLabel = 'AUTO' + (derived && PHASE_META[derived] ? ' — ' + PHASE_META[derived].label : ' — untagged');
+  return '<select class="edit-input" id="edit-phase" style="width:220px;font-size:11px">' +
+    '<option value="__auto__"' + (auto ? ' selected' : '') + '>' + autoLabel + '</option>' +
+    Object.entries(PHASE_META).map(([k, m]) =>
+      '<option value="' + k + '"' + (!auto && entry.phase === k ? ' selected' : '') + '>' + m.label + ' (pinned)</option>').join('') +
+    '</select>';
+}
+
+/* apply the PHASE select back onto an entry */
+function applyPhaseSelect(entry) {
+  const v = document.getElementById('edit-phase')?.value;
+  if (!v || v === '__auto__') {
+    delete entry.phaseLocked;
+    entry.phase = phaseForDate(entry.date);
+  } else if (PHASE_META[v]) {
+    entry.phase = v;
+    entry.phaseLocked = true;
+  }
+}
 
 function renderHistoryEntry(entry) {
   const color = getSplitColor(entry.exercise);
@@ -80,13 +162,7 @@ function renderHistoryEntry(entry) {
       '<div style="margin-bottom:12px"><div class="edit-label">NOTE</div>' +
         '<input class="edit-input" type="text" id="edit-note" maxlength="200" value="' + esc(entry.note || '') + '"></div>' +
       '<div style="margin-bottom:12px"><div class="edit-label">PHASE</div>' +
-        '<select class="edit-input" id="edit-phase" style="width:180px;font-size:11px">' +
-          '<option value=""' + (!entry.phase ? ' selected' : '') + '>—</option>' +
-          Object.entries(PHASE_META).map(([k, m]) =>
-            '<option value="' + k + '"' + (entry.phase === k ? ' selected' : '') + '>' + m.label + '</option>').join('') +
-        '</select></div>' +
-      '<button class="strain-btn' + (entry.strain ? ' on' : '') + '" id="edit-strain" onclick="this.classList.toggle(\'on\')">' +
-        'STRAIN</button>' +
+        phaseSelectHTML(entry) + '</div>' +
       '<div class="edit-actions">' +
         '<button class="save-btn" onclick="saveEdit(' + entry.id + ')">SAVE</button>' +
         '<button class="cancel-btn" onclick="cancelEdit()">CANCEL</button></div></div>';
@@ -109,13 +185,7 @@ function renderHistoryEntry(entry) {
       '<div style="margin-bottom:12px"><div class="edit-label">NOTE</div>' +
         '<input class="edit-input" type="text" id="edit-note" maxlength="200" value="' + esc(entry.note || '') + '"></div>' +
       '<div style="margin-bottom:12px"><div class="edit-label">PHASE</div>' +
-        '<select class="edit-input" id="edit-phase" style="width:180px;font-size:11px">' +
-          '<option value=""' + (!entry.phase ? ' selected' : '') + '>—</option>' +
-          Object.entries(PHASE_META).map(([k, m]) =>
-            '<option value="' + k + '"' + (entry.phase === k ? ' selected' : '') + '>' + m.label + '</option>').join('') +
-        '</select></div>' +
-      '<button class="strain-btn' + (entry.strain ? ' on' : '') + '" id="edit-strain" onclick="this.classList.toggle(\'on\')">' +
-        'STRAIN</button>' +
+        phaseSelectHTML(entry) + '</div>' +
       '<div class="edit-actions">' +
         '<button class="save-btn" onclick="saveEdit(' + entry.id + ')">SAVE</button>' +
         '<button class="cancel-btn" onclick="cancelEdit()">CANCEL</button></div></div>';
@@ -123,12 +193,13 @@ function renderHistoryEntry(entry) {
   return '<div class="history-entry"><div style="flex:1">' +
     '<div class="history-name">' + esc(entry.exercise) +
       (split ? '<span class="history-tag" style="background:' + color + '20;color:' + color + '">' + esc(split.toUpperCase()) + '</span>' : '') +
-      (entry.strain ? '<span class="strain-tag">STRAIN</span>' : '') +
+
       (entry.phase && PHASE_META[entry.phase] ? '<span class="history-tag" style="background:' + PHASE_META[entry.phase].color + '15;color:' + PHASE_META[entry.phase].color + '">' + PHASE_META[entry.phase].label + '</span>' : '') + '</div>' +
     (entry.cardio
       ? '<div class="history-detail">' + esc(cardioDetail(entry)) + '</div>' +
         '<div class="history-sets">' + (entry.vert || 0) + ' vert ft · ' + cardioMiles(entry) + ' mi</div>'
-      : '<div class="history-detail">' + entry.weight + 'lb · avg e1RM: ' + entry.e1rm + '</div>' +
+      : '<div class="history-detail">' + entry.weight + 'lb · avg e1RM: ' + entry.e1rm +
+        (isCapped(entry) ? ' <span style="color:rgba(255,255,255,0.3);font-size:9px">(capped)</span>' : '') + '</div>' +
         '<div class="history-sets">' + esc(setsDisplay(entry)) + '</div>') +
     (entry.note ? '<div class="history-note">' + esc(entry.note) + '</div>' : '') + '</div>' +
     '<div class="entry-actions">' +
@@ -152,8 +223,7 @@ async function saveEdit(id) {
     entry.incline = inc; entry.minutes = min; entry.mph = mph; entry.date = d2;
     entry.vert = calcVert(inc, min, mph);
     entry.note = (document.getElementById('edit-note')?.value || '').trim();
-    entry.phase = document.getElementById('edit-phase')?.value || null;
-    entry.strain = document.getElementById('edit-strain')?.classList.contains('on') || false;
+    applyPhaseSelect(entry);
     entry.mod = Date.now();
     entries.sort((a, b) => a.date.localeCompare(b.date));
     editingId = null;
@@ -173,8 +243,7 @@ async function saveEdit(id) {
   }
   entry.weight = w; entry.date = d; entry.setData = newSetData;
   entry.note = (document.getElementById('edit-note')?.value || '').trim();
-  entry.phase = document.getElementById('edit-phase')?.value || null;
-  entry.strain = document.getElementById('edit-strain')?.classList.contains('on') || false;
+  applyPhaseSelect(entry);
   entry.e1rm = getAvgE1RM(entry); entry.volume = getTotalVolume(entry);
   entry.mod = Date.now();
   entries.sort((a, b) => a.date.localeCompare(b.date));

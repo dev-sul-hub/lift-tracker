@@ -51,9 +51,17 @@ function setMapMode(m) { mapMode = m; captureFormVals(); render(); }
 /* ============================================================
    SECTION: LOG TAB
    ============================================================ */
+/* prefer the current profile — Pull-up, Leg Extension and Arnold Press live in
+   both splits at completely different loads. Legacy entries carry no profile,
+   so they stay eligible as a fallback. */
 function getLastEntry(exercise) {
-  const exEntries = entries.filter(e => e.exercise === exercise).sort((a, b) => a.date.localeCompare(b.date));
-  return exEntries.length ? exEntries[exEntries.length - 1] : null;
+  const all = entries.filter(e => e.exercise === exercise).sort((a, b) => a.date.localeCompare(b.date));
+  if (!all.length) return null;
+  const mine = all.filter(e => e.profile === currentProfile);
+  if (mine.length) return mine[mine.length - 1];
+  const untagged = all.filter(e => !e.profile);
+  if (untagged.length) return untagged[untagged.length - 1];
+  return all[all.length - 1];
 }
 
 function getLastLogged(exercise) {
@@ -62,13 +70,15 @@ function getLastLogged(exercise) {
   const color = getSplitColor(exercise);
   const headline = last.cardio
     ? last.vert + ' vert ft'
-    : last.weight + ' lb · avg e1RM: ' + last.e1rm;
+    : last.weight + ' lb · avg e1RM: ' + last.e1rm + (isCapped(last) ? '*' : '');
   const subline = last.cardio ? cardioDetail(last) + ' · ' + cardioMiles(last) + ' mi' : setsDisplay(last);
   return '<div class="last-logged" style="border-color:' + color + '20">' +
     '<div class="last-logged-label">LAST LOGGED — ' + formatDateFull(last.date) +
-      (last.strain ? ' &nbsp;<span class="strain-tag">STRAIN</span>' : '') + '</div>' +
+      '</div>' +
     '<div class="last-logged-weight" style="color:' + color + '">' + headline + '</div>' +
     '<div class="last-logged-sets">' + esc(subline) + '</div>' +
+    (isCapped(last) ? '<div class="bw-note" style="color:rgba(255,255,255,0.3)">* over ' + E1RM_REP_CAP +
+      ' reps — e1RM is pinned, track VOLUME instead</div>' : '') +
     (last.note ? '<div class="history-note">' + esc(last.note) + '</div>' : '') +
   '</div>';
 }
@@ -94,7 +104,7 @@ function applyPrefill() {
   /* on exercise change: prefill from last session of that exercise */
   if (prefillFor === selectedExercise) return;
   prefillFor = selectedExercise;
-  formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '' };
+  formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '' };  /* strain retained for schema only */
   const last = getLastEntry(selectedExercise);
   if (!last) return;
   if (last.cardio) {
@@ -112,7 +122,10 @@ function renderLog(c) {
   applyPrefill();
   const isBW = isBWExercise(selectedExercise);
   const cardio = isCardio(selectedExercise);
-  const today = new Date().toISOString().split('T')[0];
+  const today = isoToday();
+  const formDate = (logDateVal && logDateVal <= today) ? logDateVal : today;
+  const bwForDate = bodyweightOn(formDate);
+  const bwShown = bwForDate != null ? bwForDate : (bodyweight || '');
   const splits = getSplits();
 
   let splitBtns = '<button class="split-btn' + (filterSplit === 'All' ? ' active' : '') +
@@ -154,10 +167,16 @@ function renderLog(c) {
   }
 
   c.innerHTML =
+    renderVolStrip() +
     '<div style="margin-bottom:20px">' +
       '<label class="label">EXERCISE</label>' +
       '<div class="split-filters">' + splitBtns + '</div>' +
-      '<select class="select" onchange="setExercise(this.value)">' + options + '</select>' +
+      '<div style="display:flex;gap:8px;align-items:stretch">' +
+        '<select class="select" style="flex:1;margin:0" onchange="setExercise(this.value)">' + options + '</select>' +
+        (cardio ? '' : '<button class="data-btn" style="margin:0;white-space:nowrap" onclick="toggleAltPanel()"' +
+          ' title="swap for an available alternative">⇄ ALT</button>') +
+      '</div>' +
+      renderAltPanel() +
     '</div>' +
     renderMuscleMap() +
     getLastLogged(selectedExercise) +
@@ -171,28 +190,30 @@ function renderLog(c) {
             '<input class="input" type="number" step="0.1" min="0" id="c-mph" placeholder="3.4" value="' + esc(formVals.mph) + '" oninput="updatePreview()"></div>' +
         '</div></div>'
       : '<div style="margin-bottom:20px">' +
-          '<label class="label">BODYWEIGHT (lb)</label>' +
-          '<input class="input" type="number" value="' + (bodyweight || '') + '" id="bwInput" placeholder="enter bodyweight"' +
+          '<label class="label">BODYWEIGHT (lb) — ' + formatDateFull(formDate) + '</label>' +
+          '<input class="input" type="number" step="0.1" value="' + bwShown + '" id="bwInput" placeholder="enter bodyweight"' +
             ' onchange="bwChanged(this)" style="font-size:13px;padding:10px 12px">' +
+          (bwForDate == null && bodyweight
+            ? '<div class="bw-note" style="color:rgba(232,184,58,0.7)">no weigh-in for this date — showing last known ' + bodyweight + ' lb</div>'
+            : '') +
           (isBW ? '<div class="bw-note">↑ This exercise will use bodyweight for e1RM</div>' : '') +
         '</div>' +
         '<div style="margin-bottom:20px">' +
           '<label class="label">WEIGHT (lb)</label>' +
-          '<input class="input" type="number" id="weightInput" placeholder="' + (isBW ? (bodyweight || 'set bodyweight above') : '60') + '"' +
-            (isBW ? ' value="' + (bodyweight || '') + '" readonly style="opacity:0.5"' : ' value="' + esc(formVals.weight) + '"') +
+          '<input class="input" type="number" id="weightInput" placeholder="' + (isBW ? (bwShown || 'set bodyweight above') : '60') + '"' +
+            (isBW ? ' value="' + bwShown + '" readonly style="opacity:0.5"' : ' value="' + esc(formVals.weight) + '"') +
             ' oninput="updatePreview()">' +
         '</div>' +
         '<div style="margin-bottom:6px"><label class="label">SETS</label><div class="num-sets-row">' + setsBtns + '</div></div>' +
         '<div class="sets-container"><label class="label">REPS PER SET</label>' + setInputs + '</div>') +
     '<div class="strain-row">' +
-      '<button class="strain-btn' + (formVals.strain ? ' on' : '') + '" onclick="toggleStrain()">' +
-        (formVals.strain ? '⚠ STRAIN FELT' : 'FELT STRAIN?') + '</button>' +
       '<input class="input note-input" type="text" id="noteInput" placeholder="note (optional)" maxlength="200"' +
-        ' value="' + esc(formVals.note) + '" oninput="formVals.note=this.value">' +
+        ' value="' + esc(formVals.note) + '" oninput="formVals.note=this.value" style="width:100%">' +
     '</div>' +
     '<div style="margin-bottom:20px">' +
       '<label class="label">DATE</label>' +
-      '<input class="input" type="date" id="dateInput" value="' + today + '">' +
+      '<input class="input" type="date" id="dateInput" value="' + formDate + '" max="' + today + '"' +
+        ' onchange="logDateChanged(this)">' +
     '</div>' +
     '<div class="preview-box" id="previewBox" style="display:none">' +
       '<div class="preview-label" id="previewCaption">PREVIEW — AVG ACROSS SETS</div>' +
@@ -206,6 +227,45 @@ function renderLog(c) {
     '<button class="log-btn" id="logBtn" onclick="addEntry()" disabled' + (cardio ? ' style="background:' + CARDIO_COLOR + '"' : '') + '>' +
     (cardio ? 'LOG CARDIO' : 'LOG EXERCISE') + '</button>';
   updatePreview();
+}
+
+/* ---- alternates panel: the machine is taken, swap in one tap ---- */
+function toggleAltPanel() {
+  captureFormVals();
+  altFor = (altFor === selectedExercise) ? null : selectedExercise;
+  render();
+}
+
+function renderAltPanel() {
+  if (altFor !== selectedExercise || isCardio(selectedExercise)) return '';
+  const list = getAlts(selectedExercise);
+  const curated = isAltCurated(selectedExercise);
+  const inProfile = new Set(getAllExercises());
+  if (!list.length) {
+    return '<div class="add-panel"><div class="map-hint" style="margin:0">' +
+      'No alternates for ' + esc(selectedExercise) + ' yet — add some under ⚙ EDIT SPLITS.</div></div>';
+  }
+  return '<div class="add-panel">' +
+    '<div class="edit-label">SWAP ' + esc(selectedExercise.toUpperCase()) + ' FOR' +
+      (curated ? '' : ' <span style="color:var(--dim);letter-spacing:0">(auto-matched)</span>') + '</div>' +
+    '<div class="lib-list">' + list.map(n => {
+      const lib = libGet(n);
+      const here = inProfile.has(n);
+      return '<div class="lib-row" data-ex="' + esc(n) + '" onclick="swapToAlt(this)">' +
+        '<span class="lib-name">' + esc(n) +
+          (here ? '' : ' <span style="color:rgba(232,184,58,0.6);font-size:8px">NOT IN SPLITS</span>') + '</span>' +
+        '<span class="lib-m">' + esc(lib ? muscleNames(expandMuscles(lib.p)).slice(0, 2).join(', ') : '') + '</span></div>';
+    }).join('') + '</div>' +
+    '<div class="map-hint">Logs under the exercise you actually do, so e1RM and volume stay correct.</div>' +
+    '<button class="link-btn" style="color:var(--dim)" onclick="altFor=null;render()">cancel</button></div>';
+}
+
+function swapToAlt(el) {
+  const ex = el.dataset.ex;
+  altFor = null;
+  if (!getFilteredExercises().includes(ex)) filterSplit = 'All';
+  setExercise(ex);
+  showToast('Swapped to ' + ex);
 }
 
 function getFilteredExercises() {
@@ -234,8 +294,6 @@ function setExercise(ex) {
 }
 
 function setNumSets(n) { captureFormVals(); numSets = n; render(); }
-
-function toggleStrain() { captureFormVals(); formVals.strain = !formVals.strain; render(); }
 
 function updatePreview() {
   const box = document.getElementById('previewBox');
@@ -293,7 +351,8 @@ async function addEntry() {
     const entry = {
       id: Date.now(), exercise: selectedExercise, cardio: true,
       incline: inc, minutes: min, mph: mph,
-      date: d, strain: formVals.strain, note, phase, mod: Date.now()
+      date: d, strain: false, note, phase: phaseForDate(d),
+      profile: currentProfile, mod: Date.now()
     };
     entry.vert = calcVert(inc, min, mph);
     const prev = entries.filter(e => e.exercise === selectedExercise && e.cardio);
@@ -310,7 +369,11 @@ async function addEntry() {
     render();
     return;
   }
-  const w = parseFloat(document.getElementById('weightInput').value);
+  let w = parseFloat(document.getElementById('weightInput').value);
+  if (isBWExercise(selectedExercise)) {
+    const bwOnDate = bodyweightOn(d);
+    if (bwOnDate > 0) w = bwOnDate;
+  }
   if (!w) return;
   const setData = [];
   for (let i = 1; i <= numSets; i++) {
@@ -319,7 +382,8 @@ async function addEntry() {
     setData.push({ reps: r });
   }
   const note = (document.getElementById('noteInput')?.value || '').trim();
-  const entry = { id: Date.now(), exercise: selectedExercise, weight: w, setData, date: d, strain: formVals.strain, note, phase, mod: Date.now() };
+  const entry = { id: Date.now(), exercise: selectedExercise, weight: w, setData, date: d,
+    strain: false, note, phase: phaseForDate(d), profile: currentProfile, mod: Date.now() };
   entry.e1rm = getAvgE1RM(entry);
   entry.volume = getTotalVolume(entry);
   /* PR detection — against best avg e1RM before this entry */

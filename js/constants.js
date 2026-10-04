@@ -1,7 +1,11 @@
 /* ============================================================
    SECTION: CONFIG & CONSTANTS
    ============================================================ */
-const APP_VERSION = '2.3';
+const APP_VERSION = '2.5';
+
+/* bodyweight pseudo-series (chart tab) */
+const BW_KEY = '__BW__';
+const BW_COLOR = '#d4b8ff';
 
 const SPLIT_ORDER = ['Push', 'Pull', 'Legs', 'Full Upper', 'Legs + Arms', 'Abs'];
 const SPLIT_COLORS = {
@@ -11,9 +15,14 @@ const SPLIT_COLORS = {
 
 const PHASE_META = {
   bulk:     { label: 'BULK',     color: '#2ecc71', blurb: 'chasing PRs' },
+  leangain: { label: 'LEAN GAIN', color: '#a8e83a', blurb: 'slow surplus — volume up, rate capped' },
   cut:      { label: 'CUT',      color: '#3a8ee8', blurb: 'goal is retention, not PRs' },
   maintain: { label: 'MAINTAIN', color: '#e8b83a', blurb: 'hold the line' }
 };
+
+/* e1RM reps beyond this are extrapolation, not estimation — Epley is
+   reasonable to ~10-12 reps and inflates badly past that (200x20 "=" 333 lb) */
+const E1RM_REP_CAP = 12;
 
 const MUSCLES = {
   chest_upper: 'Upper Chest', chest_lower: 'Lower Chest',
@@ -83,6 +92,14 @@ const VOL_TARGETS = {
     abs: [10,16], obliques: [0,6],
     delt_front: null, traps: null, forearms: null, erectors: null
   },
+  /* slow surplus: above cut, but reachable in ~90-100 sets/week */
+  leangain: {
+    chest: [10,16], back: [10,16], delt_side: [10,16], quads: [10,16],
+    hamstrings: [10,16], biceps: [10,16], triceps: [10,16],
+    delt_rear: [6,10], glutes: [6,10], calves: [6,10],
+    abs: [8,12], obliques: [0,6],
+    delt_front: null, traps: null, forearms: null, erectors: null
+  },
   maintain: {
     chest: [6,10], back: [6,10], delt_side: [6,10], quads: [6,10],
     hamstrings: [6,10], biceps: [6,10], triceps: [6,10],
@@ -117,8 +134,11 @@ const LIB = [
   { n: 'Barbell Bench Press', p: ['chest'], s: ['delt_front','triceps'] },
   { n: 'Incline Barbell Bench Press', p: ['chest_upper','delt_front'], s: ['triceps'] },
   { n: 'Machine Chest Press', p: ['chest'], s: ['triceps','delt_front'] },
+  { n: 'Flat Machine Press', p: ['chest_upper','chest_lower'], s: ['triceps','delt_front'] },
+  { n: 'Incline Press (Plate)', p: ['chest_upper','delt_front'], s: ['triceps'] },
   { n: 'Incline Machine Press', p: ['chest_upper','delt_front'], s: ['triceps'] },
-  { n: 'Pec Deck Machine', p: ['chest'], s: ['delt_front'] },
+  { n: 'Pec Deck', p: ['chest'], s: ['delt_front'] },
+  { n: 'Seated Cable Fly', p: ['chest'], s: ['delt_front'] },
   { n: 'DB Fly', p: ['chest'], s: ['delt_front'] },
   { n: 'Cable Fly', p: ['chest'], s: ['delt_front'] },
   { n: 'Incline Cable Fly', p: ['chest_upper'], s: ['delt_front'] },
@@ -132,12 +152,12 @@ const LIB = [
   { n: 'Machine Shoulder Press', p: ['delt_front','delt_side'], s: ['triceps'] },
   { n: 'Barbell Overhead Press', p: ['delt_front','delt_side'], s: ['triceps','abs'] },
   { n: 'Arnold Press', p: ['delt_front','delt_side'], s: ['triceps'] },
-  { n: 'Lateral Raise', p: ['delt_side'], s: ['traps_upper'] },
+  { n: 'DB Lateral Raise', p: ['delt_side'], s: ['traps_upper'] },
   { n: 'Cable Lateral Raise', p: ['delt_side'], s: ['traps_upper'] },
   { n: 'Machine Lateral Raise', p: ['delt_side'], s: [] },
   { n: 'Front Raise', p: ['delt_front'], s: ['delt_side'] },
   { n: 'Reverse Fly', p: ['delt_rear'], s: ['traps_lower'] },
-  { n: 'Reverse Pec Deck', p: ['delt_rear'], s: ['traps_lower'] },
+  { n: 'Rear Delt Machine', p: ['delt_rear'], s: ['traps_lower'] },
   { n: 'Cable Rear Delt Fly', p: ['delt_rear'], s: ['traps_lower'] },
   { n: 'Face Pull', p: ['delt_rear','traps_lower'], s: ['traps_upper'] },
   { n: 'Upright Row', p: ['delt_side','traps_upper'], s: ['biceps'] },
@@ -157,7 +177,8 @@ const LIB = [
   { n: 'Pull-up', bw: 1, p: ['lats'], s: ['biceps','traps_lower','forearms'] },
   { n: 'Chin-up', bw: 1, p: ['lats','biceps'], s: ['traps_lower','forearms'] },
   { n: 'Assisted Pull-up', p: ['lats'], s: ['biceps','traps_lower'] },
-  { n: 'Lat Pulldown', p: ['lats'], s: ['biceps','traps_lower'] },
+  { n: 'Machine Pulldown', p: ['lats'], s: ['biceps','traps_lower'] },
+  { n: 'Cable Lat Pulldown', p: ['lats'], s: ['biceps','traps_lower'] },
   { n: 'Straight Arm Pulldown', p: ['lats'], s: ['triceps_long'] },
   { n: 'DB Row', p: ['lats','traps_lower'], s: ['biceps','delt_rear','erectors'] },
   { n: 'Barbell Row', p: ['lats','traps_lower'], s: ['biceps','erectors','delt_rear'] },
@@ -182,6 +203,7 @@ const LIB = [
   { n: 'Cable Hammer Curl', p: ['brachialis'], s: ['biceps','forearm_ext'] },
   { n: 'Single Arm DB Preacher Curl', p: ['biceps'], s: ['brachialis'] },
   { n: 'Machine Preacher Curl', p: ['biceps'], s: ['brachialis'] },
+  { n: 'Incline Machine Curl', p: ['biceps'], s: ['brachialis'] },
   { n: 'EZ Bar Curl', p: ['biceps'], s: ['brachialis','forearm_flex'] },
   { n: 'Cable Curl', p: ['biceps'], s: ['brachialis'] },
   { n: 'Concentration Curl', p: ['biceps'], s: ['brachialis'] },
@@ -198,8 +220,10 @@ const LIB = [
   { n: 'Front Squat', p: ['quads'], s: ['glute_max','abs','erectors'] },
   { n: 'Hack Squat', p: ['quads'], s: ['glute_max'] },
   { n: 'Leg Press', p: ['quads','glute_max'], s: ['hamstrings','adductors'] },
+  { n: 'Angled Leg Press', p: ['quads','glute_max'], s: ['hamstrings','adductors'] },
   { n: 'Bulgarian Split Squat', p: ['quads','glute_max'], s: ['adductors','glute_med'] },
   { n: 'Walking Lunge', p: ['quads','glute_max'], s: ['hamstrings','glute_med'] },
+  { n: 'DB Lunge', p: ['quads','glute_max'], s: ['hamstrings','glute_med'] },
   { n: 'Reverse Lunge', p: ['glute_max','quads'], s: ['hamstrings'] },
   { n: 'Step-up', p: ['quads','glute_max'], s: ['glute_med'] },
   { n: 'Leg Extension', p: ['quads'], s: [] },
@@ -220,14 +244,16 @@ const LIB = [
   { n: 'Adductor Machine', p: ['adductors'], s: [] },
   { n: 'Kettlebell Swing', p: ['glute_max','hamstrings'], s: ['erectors','abs'] },
   { n: 'Calf Raise', p: ['calves_gastro'], s: ['calves_soleus'] },
-  { n: 'Standing Calf Raise Machine', p: ['calves_gastro'], s: ['calves_soleus'] },
-  { n: 'Seated Calf Raise Machine', p: ['calves_soleus'], s: ['calves_gastro'] },
+  { n: 'Standing Calf Raise', p: ['calves_gastro'], s: ['calves_soleus'] },
+  { n: 'Seated Calf Raise', p: ['calves_soleus'], s: ['calves_gastro'] },
+  { n: 'Calf Press (Leg Press)', p: ['calves_gastro'], s: ['calves_soleus'] },
   { n: 'Tibialis Raise', p: ['tibialis'], s: [] },
   /* abs / core */
   { n: 'Decline Weighted Sit-up', p: ['abs'], s: ['obliques'] },
   { n: 'Sit-up', bw: 1, p: ['abs'], s: ['obliques'] },
   { n: 'Crunch', bw: 1, p: ['abs'], s: [] },
   { n: 'Cable Crunch', p: ['abs'], s: ['obliques'] },
+  { n: 'Ab Crunch Machine', p: ['abs'], s: [] },
   { n: 'Incline Leg Lift', bw: 1, p: ['abs'], s: ['obliques','quads'] },
   { n: 'Hanging Leg Raise', bw: 1, p: ['abs'], s: ['obliques','forearms'] },
   { n: 'Lying Leg Raise', bw: 1, p: ['abs'], s: [] },
@@ -250,7 +276,7 @@ const CARDIO_COLOR = '#e83a8e';
 /* seed split layout — used only on first run, then stored config takes over */
 const SEED = {
   home: {
-    Push: ['Incline DB Bench Press','Lateral Raise','DB Fly','Tricep Kickback','DB Shoulder Press','Skull Crusher'],
+    Push: ['Incline DB Bench Press','DB Lateral Raise','DB Fly','Tricep Kickback','DB Shoulder Press','Skull Crusher'],
     Pull: ['DB Row','Single Arm DB Preacher Curl','Pull-up','Incline DB Curl','Reverse Fly','Upright Row'],
     Legs: ['Suitcase Squat','Calf Raise','DB Deadlift','DB Hip Thrust','Bulgarian Split Squat','Nordic Curl'],
     'Full Upper': ['Incline DB Bench Press','Pull-up','DB Fly','DB Row','Arnold Press','Reverse Fly'],
@@ -258,11 +284,11 @@ const SEED = {
     Abs: ['Decline Weighted Sit-up','Incline Leg Lift','Dumbbell Side Bend']
   },
   gym: {
-    Push: ['Incline Machine Press','Cable Lateral Raise','Pec Deck Machine','Cable Tricep Pushdown','Machine Shoulder Press','Overhead Cable Extension'],
-    Pull: ['Seated Cable Row','Machine Preacher Curl','Pull-up','Cable Curl','Reverse Pec Deck','Cable Upright Row'],
-    Legs: ['Leg Press','Seated Calf Raise Machine','Barbell Romanian Deadlift','Hip Thrust Machine','Leg Extension','Lying Leg Curl Machine'],
-    'Full Upper': ['Incline Machine Press','Lat Pulldown','Pec Deck Machine','Seated Cable Row','Arnold Press','Reverse Pec Deck'],
-    'Legs + Arms': ['Leg Press','Cable Hammer Curl','Leg Extension','Overhead Cable Extension','Seated Leg Curl','Seated Calf Raise Machine','Cable Curl'],
-    Abs: ['Cable Crunch','Hanging Leg Raise','Cable Woodchop']
+    Push: ['Incline Press (Plate)','Pec Deck','Overhead Cable Extension','Rope Pushdown','Machine Shoulder Press','Cable Lateral Raise'],
+    Pull: ['Seated Cable Row','Cable Lat Pulldown','Incline Machine Curl','Machine Preacher Curl','Rear Delt Machine','Face Pull'],
+    Legs: ['Hack Squat','Barbell Romanian Deadlift','Leg Press','Calf Press (Leg Press)','Leg Extension','Seated Leg Curl','Ab Crunch Machine','Ab Coaster'],
+    'Full Upper': ['Flat Machine Press','DB Lateral Raise','Seated Cable Fly','Machine Shoulder Press','Machine Row','Machine Pulldown'],
+    'Legs + Arms': ['Leg Press','Leg Extension','Calf Press (Leg Press)','Seated Leg Curl','Cable Hammer Curl','Rope Pushdown','Ab Crunch Machine'],
+    Abs: ['Ab Crunch Machine','Ab Coaster','Hanging Leg Raise']
   }
 };

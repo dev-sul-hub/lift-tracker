@@ -2,8 +2,16 @@
    SECTION: STATE
    ============================================================ */
 let currentProfile = 'home';
+/* phase history is the source of truth; `phase` / `phaseSince` are derived
+   from the LAST segment so every existing call site keeps working. */
+let phases = [];              /* [{phase, since}] sorted ascending by since */
 let phase = 'bulk';
 let phaseSince = new Date().toISOString().split('T')[0];
+let bwLog = [];               /* [{date, w, mod}] dated weigh-ins, sorted ascending */
+let bwTombstones = [];        /* [{date, mod}] of deleted weigh-ins — lets deletes sync */
+let bwGoal = null;            /* target bodyweight for the chart goal line */
+let editingBwDate = null;     /* which day's weigh-in the history tab is editing */
+let logDateVal = null;        /* date currently chosen in the log form */
 let tombstones = [];          /* {id, mod} of deleted entries — lets deletes sync */
 let metaMod = 0;              /* last-touched timestamp for config/customs/phase/bw */
 let syncCfg = { token: '', gistId: '', lastSync: 0 };
@@ -18,6 +26,9 @@ let bodyweight = null;
 let numSets = 3;
 let editingId = null;
 let config = null;              /* per-profile split layout */
+let alts = null;                /* per-profile curated alternates: {home:{ex:[...]}, gym:{...}} */
+let altFor = null;              /* exercise whose alternate panel is open on the log tab */
+let altEditFor = null;          /* exercise being curated in the manage overlay */
 let customExercises = [];
 let mapMode = 'exercise';       /* 'exercise' | 'split' */
 let prefillFor = null;          /* which exercise the form is currently prefilled for */
@@ -100,10 +111,20 @@ function cardioMiles(e) {
   return Math.round(e.mph * (e.minutes / 60) * 100) / 100;
 }
 
+/* Epley, with reps clamped at E1RM_REP_CAP. Past ~12 reps the formula
+   extrapolates rather than estimates, so e1RM saturates and VOLUME becomes
+   the meaningful metric for high-rep work. */
 function calcE1RM(w, r) {
   if (r <= 0) return 0;
   if (r === 1) return w;
-  return Math.round(w * (1 + r / 30) * 10) / 10;
+  return Math.round(w * (1 + Math.min(r, E1RM_REP_CAP) / 30) * 10) / 10;
+}
+
+/* true when any set ran past the cap, so the UI can say e1RM is pinned */
+function isCapped(entry) {
+  const sd = entry && entry.setData;
+  if (!sd) return ((entry && entry.reps) || 0) > E1RM_REP_CAP;
+  return sd.some(x => (x.reps || 0) > E1RM_REP_CAP);
 }
 
 function getAvgE1RM(entry) {
@@ -156,6 +177,7 @@ function migrateEntry(entry) {
     entry.strain = !!entry.strain;
     entry.note = entry.note || '';
     entry.phase = entry.phase || null;
+    if (!entry.phaseLocked) delete entry.phaseLocked;
     entry.mod = entry.mod || entry.id || Date.now();
     entry.vert = calcVert(entry.incline || 0, entry.minutes || 0, entry.mph || 0);
     return entry;
@@ -167,6 +189,7 @@ function migrateEntry(entry) {
   entry.strain = !!entry.strain;
   entry.note = entry.note || '';
   entry.phase = entry.phase || null;
+  if (!entry.phaseLocked) delete entry.phaseLocked;
   entry.mod = entry.mod || entry.id || Date.now();
   entry.e1rm = getAvgE1RM(entry);
   entry.volume = getTotalVolume(entry);
@@ -245,6 +268,95 @@ function getSplitName(exercise) {
 }
 
 /* ============================================================
+   SECTION: EXERCISE ALTERNATES
+   Equipment is occupied at 5am, so every exercise needs fallbacks.
+   Curated lists win; otherwise they're ranked from the muscle tags.
+   A swap is a one-tap JUMP, not an alias — the entry saves under the
+   exercise actually performed, so e1RM charts and volume stay honest.
+   ============================================================ */
+
+function defaultAlts() { return { home: {}, gym: {} }; }
+
+/* the lead primary tag is what the exercise is FOR — plain tag overlap
+   ranks Machine Shoulder Press above Pec Deck as an incline-press sub */
+function leadMuscles(ex) {
+  const lib = libGet(ex);
+  if (!lib) return [];
+  return expandMuscles((lib.p || []).slice(0, 1));
+}
+
+/* the volume group a muscle id rolls up into — soleus and gastrocnemius are
+   disjoint tags but the same trainable group, so calves find nothing without this */
+function volGroupOf(id) {
+  const g = VOL_GROUPS.find(x => x.ids.includes(id));
+  return g ? g.key : null;
+}
+
+function altScore(a, b, strict) {
+  const la = libGet(a), lb = libGet(b);
+  if (!la || !lb) return 0;
+  const pa = expandMuscles(la.p), pb = expandMuscles(lb.p);
+  if (!pa.length || !pb.length) return 0;
+  if (strict === 'group') {
+    /* coarsest tier: same volume group for the lead muscle */
+    const ga = leadMuscles(a).map(volGroupOf).filter(Boolean);
+    const gb = leadMuscles(b).map(volGroupOf).filter(Boolean);
+    if (!ga.some(k => gb.includes(k))) return 0;
+    return 0.4;   /* above the 0.3 floor, below any real tag match */
+  }
+  if (strict) {
+    const ma = leadMuscles(a), mb = leadMuscles(b);
+    if (!ma.some(id => mb.includes(id)) && !mb.some(id => ma.includes(id))) return 0;
+  }
+  const inter = pa.filter(x => pb.includes(x)).length;
+  const uni = new Set(pa.concat(pb)).size;
+  const sa = expandMuscles(la.s), sb = expandMuscles(lb.s);
+  const si = sa.filter(x => sb.includes(x)).length;
+  const su = new Set(sa.concat(sb)).size;
+  return Math.round((inter / uni + 0.15 * (su ? si / su : 0)) * 1000) / 1000;
+}
+
+/* ranked candidates: things already in this profile's splits come first,
+   because those are demonstrably available where you train */
+function autoAlts(ex, limit) {
+  const lib = libGet(ex);
+  if (!lib || lib.cardio) return [];
+  const inProfile = new Set(getAllExercises());
+  const pool = getLibrary().filter(e => e.n !== ex && !e.cardio && (e.p || []).length);
+  const rank = strict => pool
+    .map(e => ({ n: e.n, s: altScore(ex, e.n, strict), inP: inProfile.has(e.n) ? 1 : 0 }))
+    .filter(x => x.s > 0.3)
+    .sort((a, b) => (b.inP - a.inP) || (b.s - a.s));
+  let out = rank(true);                 /* lead primary muscle must match */
+  if (!out.length) out = rank(false);   /* any primary overlap */
+  if (!out.length) out = rank('group'); /* same volume group (calves) */
+  return out.slice(0, limit || 8);
+}
+
+/* curated list if one exists, otherwise the auto ranking */
+function getAlts(ex) {
+  const cur = alts && alts[currentProfile] && alts[currentProfile][ex];
+  if (Array.isArray(cur)) return cur.filter(n => libGet(n));
+  return autoAlts(ex, 5).map(x => x.n);
+}
+
+function isAltCurated(ex) {
+  return !!(alts && alts[currentProfile] && Array.isArray(alts[currentProfile][ex]));
+}
+
+async function setAlts(ex, list) {
+  if (!alts) alts = defaultAlts();
+  if (!alts[currentProfile]) alts[currentProfile] = {};
+  if (list === null) delete alts[currentProfile][ex];
+  else alts[currentProfile][ex] = list;
+  await saveAlts(); await bumpMeta();
+}
+
+async function saveAlts() {
+  try { await store.set('lift-tracker-alts', JSON.stringify(alts || defaultAlts())); } catch (e) {}
+}
+
+/* ============================================================
    SECTION: STORAGE
    ============================================================ */
 const store = {
@@ -284,6 +396,14 @@ async function loadData() {
   } catch (e) {}
   if (!config) config = defaultConfig();
   try {
+    const al = await store.get('lift-tracker-alts');
+    if (al) {
+      const parsed = JSON.parse(al);
+      if (parsed && typeof parsed === 'object') alts = { home: parsed.home || {}, gym: parsed.gym || {} };
+    }
+  } catch (e) {}
+  if (!alts) alts = defaultAlts();
+  try {
     const cus = await store.get('lift-tracker-custom-ex');
     if (cus) {
       const parsed = JSON.parse(cus);
@@ -306,9 +426,45 @@ async function loadData() {
     const ph = await store.get('lift-tracker-phase');
     if (ph) {
       const parsed = JSON.parse(ph);
-      if (parsed && PHASE_META[parsed.phase]) { phase = parsed.phase; phaseSince = parsed.since || phaseSince; }
+      if (parsed) {
+        if (PHASE_META[parsed.phase]) { phase = parsed.phase; phaseSince = parsed.since || phaseSince; }
+        if (Array.isArray(parsed.phases) && parsed.phases.filter(validSeg).length) {
+          phases = parsed.phases;
+        } else if (PHASE_META[parsed.phase]) {
+          /* upgrading from the single-phase format: rebuild the history from
+             whatever entry tags survived, then append the stored current phase */
+          const inf = inferPhasesFromEntries();
+          phases = inf.length ? inf : [];
+          const last = phases[phases.length - 1];
+          if (!last || parsed.since > last.since) phases.push({ phase: parsed.phase, since: parsed.since || isoToday() });
+        }
+      }
     }
   } catch (e) {}
+  normalizePhases();
+  try {
+    const bl = await store.get('lift-tracker-bw-log');
+    if (bl) { const p = JSON.parse(bl); if (Array.isArray(p)) bwLog = p.filter(r => r && r.date && r.w > 0); }
+  } catch (e) {}
+  try {
+    const bt = await store.get('lift-tracker-bw-tombstones');
+    if (bt) { const p = JSON.parse(bt); if (Array.isArray(p)) bwTombstones = p; }
+  } catch (e) {}
+  try {
+    const bg = await store.get('lift-tracker-bw-goal');
+    if (bg) bwGoal = parseFloat(bg) || null;
+  } catch (e) {}
+  sortBwLog();
+  /* seed the log from the legacy scalar so the chart isn't empty on upgrade */
+  if (!bwLog.length && bodyweight > 0) {
+    const lastEntry = entries.length ? entries[entries.length - 1].date : isoToday();
+    bwLog = [{ date: lastEntry, w: bodyweight, mod: Date.now() }];
+    await saveBwLog();
+  }
+  bodyweight = latestBw();
+  /* regenerate entry tags from the history — repairs anything the old
+     restamp logic cleared, and is a no-op once they already agree */
+  await restampEntries();
   try {
     const ui = await store.get('lift-tracker-ui');
     if (ui) {
@@ -349,10 +505,31 @@ async function saveBodyweight(w) {
   try { await store.set('lift-tracker-bodyweight', String(w)); } catch (e) {}
 }
 
-function bwChanged(el) {
+/* date currently selected in the log form */
+function logDate() {
+  const el = document.getElementById('dateInput');
+  if (el && el.value) return el.value;
+  return logDateVal || isoToday();
+}
+
+async function logDateChanged(el) {
+  const v = el.value;
+  if (!v) { el.value = logDate(); return; }
+  captureFormVals();
+  logDateVal = v;
+  render();
+}
+
+/* bodyweight entered on the log tab is a weigh-in for the form's DATE,
+   not just "now" — so backfilling a missed morning works */
+async function bwChanged(el) {
+  const d = logDate();
   const w = parseFloat(el.value);
-  if (!w || w <= 0) { el.value = bodyweight || ''; return; }  /* keep previous value, never a hardcoded default */
-  saveBodyweight(w); bumpMeta();
+  if (!w || w <= 0) { el.value = bodyweightOn(d) || bodyweight || ''; return; }
+  const n = await setBodyweightOn(d, w);
+  showToast(w + ' lb on ' + formatDateFull(d) +
+    (n ? ' — ' + n + ' bodyweight ' + (n === 1 ? 'entry' : 'entries') + ' recalculated' : ''),
+    { duration: n ? 3200 : 2200 });
   render();
 }
 
@@ -391,46 +568,126 @@ async function bumpMeta() {
   metaMod = Date.now();
   try { await store.set('lift-tracker-metamod', String(metaMod)); } catch (e) {}
 }
+/* one-slot pre-destruction snapshot — CLEAR ALL and IMPORT both wipe
+   entries, and there was no way back */
+async function saveSafety(reason) {
+  try {
+    await store.set('lift-tracker-safety', JSON.stringify({
+      at: Date.now(), reason: reason || '', payload: buildSyncPayload()
+    }));
+  } catch (e) {}
+}
+
+async function getSafety() {
+  try {
+    const raw = await store.get('lift-tracker-safety');
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    return (p && p.payload && Array.isArray(p.payload.entries)) ? p : null;
+  } catch (e) { return null; }
+}
+
 async function saveSyncCfg() {
   try { await store.set('lift-tracker-sync', JSON.stringify(syncCfg)); } catch (e) {}
 }
 
+/* ---- phase history ------------------------------------------------------
+   Entry phase tags are DERIVED from this history, never inferred from a
+   single current phase. That makes restamping idempotent: re-entering a
+   phase you've been in before can no longer erase the earlier stretch. */
+
+function isoToday() { return new Date().toISOString().split('T')[0]; }
+function validSeg(s) {
+  return !!(s && PHASE_META[s.phase] && typeof s.since === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.since));
+}
+
+/* drop junk, sort, and collapse runs of the same phase to their earliest start */
+function normalizePhases() {
+  phases = (phases || []).filter(validSeg).sort((a, b) => a.since.localeCompare(b.since));
+  const out = [];
+  phases.forEach(s => {
+    const prev = out[out.length - 1];
+    if (prev && prev.since === s.since) { out[out.length - 1] = { phase: s.phase, since: s.since }; return; }
+    if (prev && prev.phase === s.phase) return;   /* same phase continuing — keep earlier start */
+    out.push({ phase: s.phase, since: s.since });
+  });
+  phases = out;
+  if (!phases.length) phases = [{ phase: phase || 'bulk', since: phaseSince || isoToday() }];
+  const last = phases[phases.length - 1];
+  phase = last.phase;
+  phaseSince = last.since;
+}
+
+/* phase in effect on a given date, or null if it predates all history */
+function phaseForDate(d) {
+  let out = null;
+  for (let i = 0; i < phases.length; i++) {
+    if (phases[i].since <= d) out = phases[i].phase; else break;
+  }
+  return out;
+}
+
+/* rebuild the history from surviving per-entry tags — recovery path for
+   backups that carry correct entry tags but no history */
+function inferPhasesFromEntries() {
+  const tagged = entries.filter(e => e.phase && PHASE_META[e.phase])
+    .slice().sort((a, b) => a.date.localeCompare(b.date));
+  const out = [];
+  tagged.forEach(e => {
+    const prev = out[out.length - 1];
+    if (!prev || prev.phase !== e.phase) out.push({ phase: e.phase, since: e.date });
+  });
+  return out;
+}
+
 async function savePhase() {
-  try { await store.set('lift-tracker-phase', JSON.stringify({ phase, since: phaseSince })); } catch (e) {}
+  /* `phase`/`since` stay in the payload so older builds and older backups
+     still read something sensible — storage key is unchanged. */
+  try {
+    await store.set('lift-tracker-phase', JSON.stringify({ phase, since: phaseSince, phases }));
+  } catch (e) {}
 }
 
 async function setPhase(p) {
-  if (!PHASE_META[p] || p === phase) return;
-  phase = p;
-  phaseSince = new Date().toISOString().split('T')[0];
+  if (!PHASE_META[p]) return;
+  const today = isoToday();
+  if (phase === p && phaseSince === today) return;
+  const i = phases.findIndex(s => s.since === today);
+  if (i >= 0) phases[i] = { phase: p, since: today };
+  else phases.push({ phase: p, since: today });
+  normalizePhases();
   await savePhase(); await bumpMeta();
-  await restampEntries();
+  const n = await restampEntries();
   updatePhaseUI();
-  showToast('Phase: ' + PHASE_META[p].label + ' — ' + PHASE_META[p].blurb, { color: PHASE_META[p].color, duration: 2800 });
+  showToast('Phase: ' + PHASE_META[p].label + ' — ' + PHASE_META[p].blurb +
+    (n ? ' · ' + n + ' re-tagged' : ''), { color: PHASE_META[p].color, duration: 2800 });
   render();
 }
 
-/* re-tag entries after a phase or start-date change:
-   on/after the start date → current phase; before it and wrongly carrying
-   the current phase → cleared (unknown) */
+/* derive every entry's phase from the history; locked entries are left alone */
 async function restampEntries() {
   let n = 0;
   entries.forEach(e => {
-    if (e.date >= phaseSince) {
-      if (e.phase !== phase) { e.phase = phase; n++; }
-    } else if (e.phase === phase) {
-      e.phase = null; n++;
-    }
+    if (e.phaseLocked) return;
+    const p = phaseForDate(e.date);
+    if (e.phase !== p) { e.phase = p; e.mod = Date.now(); n++; }
   });
   if (n > 0) await saveData();
   return n;
 }
 
+/* editing the date on the header row moves the CURRENT segment's start */
 async function phaseSinceChanged(el) {
   const v = el.value;
-  const today = new Date().toISOString().split('T')[0];
-  if (!v || v > today) { el.value = phaseSince; return; }
-  phaseSince = v;
+  if (!v || v > isoToday()) { el.value = phaseSince; return; }
+  const prev = phases.length > 1 ? phases[phases.length - 2] : null;
+  if (prev && v <= prev.since) {
+    el.value = phaseSince;
+    showToast('Start must be after ' + formatDateFull(prev.since) + ' — use PHASE HISTORY to reorder', { color: 'var(--amber)', duration: 3400 });
+    return;
+  }
+  phases[phases.length - 1] = { phase: phase, since: v };
+  normalizePhases();
   await savePhase(); await bumpMeta();
   const n = await restampEntries();
   updatePhaseUI();
@@ -449,8 +706,91 @@ function updatePhaseUI() {
       '">' + m.label + '</button>';
   });
   html += '<span class="phase-since">since <input type="date" value="' + phaseSince + '" max="' +
-    new Date().toISOString().split('T')[0] + '" onchange="phaseSinceChanged(this)" title="edit phase start date"></span>';
+    isoToday() + '" onchange="phaseSinceChanged(this)" title="edit the current phase start date"></span>';
+  html += '<button class="data-btn" onclick="openPhaseHistory()" title="phase history + bodyweight">⏱ HISTORY</button>';
   row.innerHTML = html;
+}
+
+/* ---- dated bodyweight log ---------------------------------------------- */
+
+function sortBwLog() { bwLog.sort((a, b) => a.date.localeCompare(b.date)); }
+
+/* most recent weigh-in on or before a date; null if none */
+function bodyweightOn(d) {
+  let out = null;
+  for (let i = 0; i < bwLog.length; i++) {
+    if (bwLog[i].date <= d) out = bwLog[i].w; else break;
+  }
+  return out;
+}
+
+function latestBw() { return bwLog.length ? bwLog[bwLog.length - 1].w : (bodyweight || null); }
+
+/* trailing n-day mean at each weigh-in — the signal to steer a slow build by */
+function bwRolling(n) {
+  return bwLog.map(r => {
+    const from = new Date(r.date + 'T12:00:00');
+    from.setDate(from.getDate() - (n - 1));
+    const fromISO = from.toISOString().split('T')[0];
+    const win = bwLog.filter(x => x.date >= fromISO && x.date <= r.date);
+    return { date: r.date, w: Math.round(win.reduce((s, x) => s + x.w, 0) / win.length * 100) / 100, n: win.length };
+  });
+}
+
+/* recompute bodyweight-loaded entries from the weigh-in log, forward of a date.
+   Entries with no weigh-in on or before them are left frozen. */
+async function recalcBWEntries(fromDate) {
+  let n = 0;
+  entries.forEach(e => {
+    if (e.cardio || !isBWExercise(e.exercise)) return;
+    if (fromDate && e.date < fromDate) return;
+    const w = bodyweightOn(e.date);
+    if (!(w > 0) || w === e.weight) return;
+    e.weight = w;
+    e.e1rm = getAvgE1RM(e);
+    e.volume = getTotalVolume(e);
+    e.mod = Date.now();
+    n++;
+  });
+  if (n > 0) await saveData();
+  return n;
+}
+
+async function setBodyweightOn(date, w) {
+  if (!date || !(w > 0)) return 0;
+  const i = bwLog.findIndex(r => r.date === date);
+  if (i >= 0) bwLog[i] = { date, w, mod: Date.now() };
+  else bwLog.push({ date, w, mod: Date.now() });
+  sortBwLog();
+  bwTombstones = bwTombstones.filter(t => t.date !== date);
+  bodyweight = latestBw();
+  await saveBwLog(); await saveBwTombstones();
+  try { await store.set('lift-tracker-bodyweight', String(bodyweight)); } catch (e) {}
+  await bumpMeta();
+  return await recalcBWEntries(date);
+}
+
+async function deleteBodyweightOn(date) {
+  const i = bwLog.findIndex(r => r.date === date);
+  if (i < 0) return 0;
+  bwLog.splice(i, 1);
+  bwTombstones.push({ date, mod: Date.now() });
+  sortBwLog();
+  bodyweight = latestBw();
+  await saveBwLog(); await saveBwTombstones();
+  try { if (bodyweight) await store.set('lift-tracker-bodyweight', String(bodyweight)); } catch (e) {}
+  await bumpMeta();
+  return await recalcBWEntries(date);
+}
+
+async function saveBwLog() {
+  try { await store.set('lift-tracker-bw-log', JSON.stringify(bwLog)); } catch (e) {}
+}
+async function saveBwTombstones() {
+  try { await store.set('lift-tracker-bw-tombstones', JSON.stringify(bwTombstones.slice(-300))); } catch (e) {}
+}
+async function saveBwGoal() {
+  try { await store.set('lift-tracker-bw-goal', bwGoal == null ? '' : String(bwGoal)); } catch (e) {}
 }
 
 /* best avg e1RM for an exercise before the current phase started */

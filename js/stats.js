@@ -53,6 +53,62 @@ function muscleSetsInRange(fromISO, toISO) {
 
 function setStatsVolMode(m) { statsVolMode = m; saveUI(); render(); }
 
+/* ---- weekly volume strip for the LOG tab ----
+   shows BOTH deficits and surpluses, because at 90 sets/week the fix is
+   reallocation, not addition */
+function volStatus() {
+  const cur = muscleSetsInRange(isoDaysAgo(6), new Date().toISOString().split('T')[0]);
+  const targets = VOL_TARGETS[phase] || {};
+  const under = [], over = [];
+  VOL_GROUPS.forEach(g => {
+    const band = targets[g.key];
+    if (!band) return;
+    const n = cur[g.key];
+    if (g.key === 'obliques') { if (n > band[1]) over.push({ g, n, band }); return; }
+    if (n < band[0]) under.push({ g, n, band, gap: band[0] - n });
+    else if (n >= band[1]) over.push({ g, n, band });
+  });
+  under.sort((a, b) => b.gap - a.gap);
+  return { under, over, cur };
+}
+
+function renderVolStrip() {
+  const { under, over, cur } = volStatus();
+  /* nothing logged in the window: 11 zero chips is noise, say it plainly */
+  const total = VOL_GROUPS.reduce((s, g) => s + (cur[g.key] || 0), 0);
+  if (total === 0) {
+    const last = entries.length ? entries[entries.length - 1].date : null;
+    return '<div class="vol-strip" style="border:1px solid rgba(255,255,255,0.08);border-radius:6px;' +
+      'padding:8px 10px;margin-bottom:14px;font-size:10px;letter-spacing:0.5px;color:var(--dim);cursor:pointer"' +
+      ' onclick="switchTab(\'stats\')">NO SETS IN THE LAST 7 DAYS' +
+      (last ? ' · LAST LOGGED ' + formatDateFull(last).toUpperCase() : '') + '</div>';
+  }
+  if (!under.length && !over.length) {
+    return '<div class="vol-strip" style="border:1px solid rgba(46,204,113,0.25);background:rgba(46,204,113,0.06);' +
+      'border-radius:6px;padding:8px 10px;margin-bottom:14px;font-size:10px;letter-spacing:0.5px;color:var(--green)"' +
+      ' onclick="switchTab(\'stats\')">✓ ALL MUSCLE GROUPS IN TARGET BAND — LAST 7 DAYS</div>';
+  }
+  const chip = (x, color) => '<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 6px;border-radius:4px;' +
+    'background:' + color + '18;color:' + color + ';font-size:10px;white-space:nowrap">' +
+    x.g.label + ' ' + x.n + '/' + x.band[0] + '–' + x.band[1] + '</span>';
+  let html = '<div class="vol-strip" style="border:1px solid rgba(255,255,255,0.08);border-radius:6px;' +
+    'padding:8px 10px;margin-bottom:14px;cursor:pointer" onclick="switchTab(\'stats\')">';
+  if (under.length) {
+    html += '<div style="margin-bottom:' + (over.length ? '6px' : '0') + '">' +
+      '<span style="font-size:9px;letter-spacing:1.5px;color:var(--amber);margin-right:6px">UNDER</span>' +
+      under.slice(0, 5).map(x => chip(x, '#e8b83a')).join('') +
+      (under.length > 5 ? '<span style="font-size:9px;color:var(--dim)">+' + (under.length - 5) + ' more</span>' : '') +
+      '</div>';
+  }
+  if (over.length) {
+    html += '<div><span style="font-size:9px;letter-spacing:1.5px;color:#3a8ee8;margin-right:6px">AT/OVER</span>' +
+      over.slice(0, 5).map(x => chip(x, '#3a8ee8')).join('') + '</div>';
+  }
+  html += '<div style="font-size:9px;color:rgba(255,255,255,0.3);margin-top:6px;letter-spacing:0.5px">' +
+    'LAST 7 DAYS · ' + (PHASE_META[phase] || {}).label + ' TARGETS · TAP FOR DETAIL</div></div>';
+  return html;
+}
+
 function renderStats(c) {
   const today = new Date().toISOString().split('T')[0];
   const pmv = PHASE_META[phase];
@@ -187,11 +243,9 @@ function renderStats(c) {
       const bestRecent = Math.max(...inPhase.slice(-4).map(e => e.e1rm));
       if (bestRecent >= baseline * 0.9) { held++; return; }
       const pct = Math.round((1 - bestRecent / baseline) * 1000) / 10;
-      const recentStrain = inPhase.slice(-4).some(e => e.strain);
       stallHTML += '<div class="stall-row" style="border-color:rgba(232,184,58,0.25)">' +
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">Down ' + pct + '% — best this cut ' + bestRecent + ' lb vs pre-cut best ' + baseline + ' lb' +
-        (recentStrain ? ' · <span style="color:var(--red)">strain flagged recently</span>' : '') +
         '</div></div>';
     });
     if (total > 0) {
@@ -213,17 +267,15 @@ function renderStats(c) {
       const prVal = Math.max(...data.map(e => e.e1rm));
       if (best4 >= prVal * 0.95) return;
       const pct = Math.round((1 - best4 / prVal) * 1000) / 10;
-      const recentStrain = last4.some(e => e.strain);
       stallHTML += '<div class="stall-row">' +
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">Down ' + pct + '% from PR ' + prVal + ' lb · recent best ' + best4 + ' lb' +
-        (recentStrain ? ' · <span style="color:var(--red)">strain flagged recently</span>' : '') +
         '</div></div>';
     });
     if (!stallHTML) stallHTML = '<div class="empty" style="padding:24px">Everything within 5% of its best. Maintenance on track.</div>';
   } else {
     watchTitle = 'STALL WATCH';
-    watchSub = 'bulking since ' + formatDateFull(phaseSince) + ' · exercises with 5+ sessions whose best recent e1RM hasn\'t beaten an older PR — informational, not a problem during a deliberate ramp-up';
+    watchSub = (phase === 'leangain' ? 'lean gain since ' : 'bulking since ') + formatDateFull(phaseSince) + ' · exercises with 5+ sessions whose best recent e1RM hasn\'t beaten an older PR — informational, not a problem during a deliberate ramp-up';
     getAllExercises().forEach(ex => {
       if (isCardio(ex)) return;
       const data = entries.filter(e => e.exercise === ex).sort((a, b) => a.date.localeCompare(b.date));
@@ -235,12 +287,10 @@ function renderStats(c) {
       const prVal = Math.max(...data.map(e => e.e1rm));
       const prEntry = data.find(e => e.e1rm === prVal);
       const since = data.length - 1 - data.indexOf(prEntry);
-      const recentStrain = last4.some(e => e.strain);
       stallHTML += '<div class="stall-row">' +
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">No avg e1RM improvement in last 4 sessions · PR ' + prVal + ' lb on ' + formatDateFull(prEntry.date) +
         ' · ' + since + ' session' + (since === 1 ? '' : 's') + ' since' +
-        (recentStrain ? ' · <span style="color:var(--red)">strain flagged recently — stall may be intentional</span>' : '') +
         '</div></div>';
     });
     if (!stallHTML) stallHTML = '<div class="empty" style="padding:24px">Nothing stalled. Keep going.</div>';

@@ -3,7 +3,7 @@
    ============================================================ */
 function openManage() {
   captureFormVals();
-  manageUnlocked = false; addingTo = null; addSearch = ''; customFormOpen = false;
+  manageUnlocked = false; addingTo = null; addSearch = ''; customFormOpen = false; altEditFor = null;
   resetCustomForm();
   document.getElementById('manageOverlay').classList.add('open');
   renderManage();
@@ -51,12 +51,20 @@ function renderManage() {
       html += '<div class="m-ex-row"><div class="m-ex-name">' + esc(ex) +
         (lib ? '<span class="m-ex-m">' + esc(libSummary(lib)) + (lib.bw ? ' · BW' : '') + '</span>'
              : '<span class="m-ex-m" style="color:rgba(232,184,58,0.5)">no muscle data</span>') + '</div>';
+      if (!isCardio(ex)) {
+        const n = getAlts(ex).length;
+        const cur = isAltCurated(ex);
+        html += '<button class="m-arrow" style="width:auto;padding:0 7px;font-size:9px;letter-spacing:0.5px;' +
+          (cur ? 'color:var(--accent);border-color:rgba(58,142,232,0.35)' : 'color:var(--dim)') + '"' +
+          ' data-ex="' + esc(ex) + '" onclick="openAltEdit(this)" title="alternates when the equipment is taken">⇄ ' + n + '</button>';
+      }
       if (manageUnlocked) {
         html += '<button class="m-arrow" ' + (i === 0 ? 'disabled' : '') + ' data-split="' + esc(name) + '" data-i="' + i + '" onclick="moveEx(this,-1)">↑</button>' +
           '<button class="m-arrow" ' + (i === data.exercises.length - 1 ? 'disabled' : '') + ' data-split="' + esc(name) + '" data-i="' + i + '" onclick="moveEx(this,1)">↓</button>' +
           '<button class="m-del" data-split="' + esc(name) + '" data-i="' + i + '" onclick="removeEx(this)">×</button>';
       }
       html += '</div>';
+      if (altEditFor === ex) html += renderAltEdit(ex);
     });
     if (addingTo === name) {
       html += renderAddPanel(name);
@@ -181,5 +189,70 @@ async function removeEx(el) {
   config[currentProfile][split].splice(i, 1);
   await saveConfig(); await bumpMeta();
   showToast('Removed ' + ex + ' from ' + split + ' — history kept');
+  renderManage();
+}
+
+/* ============================================================
+   SECTION: ALTERNATES CURATION
+   Auto-ranking from muscle tags gets most of it right but not all —
+   plain tag overlap puts Machine Shoulder Press above Pec Deck as an
+   incline-press sub. So the ranking seeds the list and you fix it.
+   ============================================================ */
+function openAltEdit(el) {
+  altEditFor = (altEditFor === el.dataset.ex) ? null : el.dataset.ex;
+  renderManage();
+}
+
+function renderAltEdit(ex) {
+  const chosen = getAlts(ex);
+  const curated = isAltCurated(ex);
+  const inProfile = new Set(getAllExercises());
+  const auto = autoAlts(ex, 10).map(x => x.n);
+  /* candidates = current picks + the auto ranking, de-duped, picks first */
+  const cands = [...new Set(chosen.concat(auto))];
+  const chosenSet = new Set(chosen);
+  return '<div class="add-panel">' +
+    '<div class="edit-label">ALTERNATES FOR ' + esc(ex.toUpperCase()) +
+      ' <span style="color:var(--dim);letter-spacing:0">(' + (curated ? 'curated' : 'auto-matched') + ')</span></div>' +
+    '<div class="lib-list">' + (cands.length ? cands.map(n => {
+      const lib = libGet(n);
+      const on = chosenSet.has(n);
+      return '<div class="lib-row" data-ex="' + esc(ex) + '" data-alt="' + esc(n) + '" onclick="toggleAlt(this)"' +
+        ' style="' + (on ? 'background:rgba(58,142,232,0.08)' : '') + '">' +
+        '<span class="lib-name" style="' + (on ? 'color:var(--accent)' : '') + '">' +
+          (on ? '✓ ' : '') + esc(n) +
+          (inProfile.has(n) ? '' : ' <span style="color:rgba(232,184,58,0.6);font-size:8px">NOT IN SPLITS</span>') + '</span>' +
+        '<span class="lib-m">' + esc(lib ? muscleNames(expandMuscles(lib.p)).slice(0, 2).join(', ') : '') + '</span></div>';
+    }).join('') : '<div class="empty" style="padding:16px">No tagged candidates. Add via search below.</div>') + '</div>' +
+    '<input class="input" type="text" id="altSearchInput" placeholder="search the library to add one"' +
+      ' value="' + esc(addSearch) + '" oninput="addSearch=this.value;renderManage()" style="font-size:13px;padding:10px 12px">' +
+    (addSearch.trim() ? '<div class="lib-list">' + (() => {
+      const q = addSearch.trim().toLowerCase();
+      const hits = getLibrary().filter(e => e.n !== ex && !e.cardio && !chosenSet.has(e.n) && e.n.toLowerCase().includes(q))
+        .sort((a, b) => a.n.localeCompare(b.n)).slice(0, 12);
+      return hits.length ? hits.map(e =>
+        '<div class="lib-row" data-ex="' + esc(ex) + '" data-alt="' + esc(e.n) + '" onclick="toggleAlt(this)">' +
+        '<span class="lib-name">+ ' + esc(e.n) + '</span>' +
+        '<span class="lib-m">' + esc(muscleNames(expandMuscles(e.p)).slice(0, 2).join(', ')) + '</span></div>').join('')
+        : '<div class="empty" style="padding:14px">No matches.</div>';
+    })() + '</div>' : '') +
+    '<div class="edit-actions">' +
+      (curated ? '<button class="cancel-btn" data-ex="' + esc(ex) + '" onclick="resetAlt(this)">RESET TO AUTO</button>' : '') +
+      '<button class="cancel-btn" onclick="altEditFor=null;addSearch=\'\';renderManage()">DONE</button>' +
+    '</div></div>';
+}
+
+async function toggleAlt(el) {
+  const ex = el.dataset.ex, alt = el.dataset.alt;
+  const cur = getAlts(ex).slice();
+  const i = cur.indexOf(alt);
+  if (i >= 0) cur.splice(i, 1); else cur.push(alt);
+  await setAlts(ex, cur);
+  renderManage();
+}
+
+async function resetAlt(el) {
+  await setAlts(el.dataset.ex, null);
+  showToast('Reset to auto-matched alternates');
   renderManage();
 }
