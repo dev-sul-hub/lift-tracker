@@ -17,6 +17,11 @@ function renderChart(c) {
     return '<option value="' + esc(ex) + '"' + (ex === chartExercise ? ' selected' : '') + '>' +
       esc(ex) + (count > 0 ? ' (' + count + ')' : '') + '</option>';
   }).join('');
+  if (chartExercise && chartExercise !== BW_KEY && !allExs.includes(chartExercise) && !archived.includes(chartExercise)) {
+    options = '<optgroup label="— SWAPPED IN (NOT IN SPLITS) —">' +
+      '<option value="' + esc(chartExercise) + '" selected>' + esc(chartExercise) + '</option>' +
+      '</optgroup>' + options;
+  }
   if (archived.length) {
     options += '<optgroup label="— NOT IN CURRENT SPLITS —">' + archived.map(ex => {
       const count = entries.filter(e => e.exercise === ex).length;

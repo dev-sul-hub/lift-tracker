@@ -147,9 +147,16 @@ function renderLog(c) {
   }
   splitBtns += '<button class="gear-btn" onclick="openManage()">⚙ EDIT SPLITS</button>';
 
-  let options = getFilteredExercises().map(ex =>
+  const filtered = getFilteredExercises();
+  let options = filtered.map(ex =>
     '<option value="' + esc(ex) + '"' + (ex === selectedExercise ? ' selected' : '') + '>' + esc(ex) + '</option>'
   ).join('');
+  /* swapped into an alternate that isn't in any split — keep it selectable */
+  if (selectedExercise && !filtered.includes(selectedExercise)) {
+    options = '<optgroup label="— SWAPPED IN (NOT IN SPLITS) —">' +
+      '<option value="' + esc(selectedExercise) + '" selected>' + esc(selectedExercise) + '</option>' +
+      '</optgroup>' + options;
+  }
 
   let setsBtns = '';
   for (let i = 1; i <= 5; i++) {
@@ -177,6 +184,10 @@ function renderLog(c) {
           ' title="swap for an available alternative">⇄ ALT</button>') +
       '</div>' +
       renderAltPanel() +
+      (selectedExercise && !cardio && !getAllExercises().includes(selectedExercise)
+        ? '<div class="map-hint" style="margin-top:6px;color:rgba(232,184,58,0.7)">' +
+          'Swapped in — ' + esc(selectedExercise) + ' is not in your splits. Logs normally; add it via ⚙ EDIT SPLITS to keep it.</div>'
+        : '') +
     '</div>' +
     renderMuscleMap() +
     getLastLogged(selectedExercise) +
@@ -263,7 +274,7 @@ function renderAltPanel() {
 function swapToAlt(el) {
   const ex = el.dataset.ex;
   altFor = null;
-  if (!getFilteredExercises().includes(ex)) filterSplit = 'All';
+  /* keep the split filter as-is — the picker now carries off-split selections */
   setExercise(ex);
   showToast('Swapped to ' + ex);
 }
@@ -278,10 +289,13 @@ function getFilteredExercises() {
 
 function setFilter(f) {
   captureFormVals();
+  const changed = f !== filterSplit;
   filterSplit = f;
   mapMode = (f !== 'All' && f !== 'Cardio') ? 'split' : 'exercise';
   const filtered = getFilteredExercises();
-  if (!filtered.includes(selectedExercise) && filtered.length > 0) selectedExercise = filtered[0];
+  /* only reassign when the filter actually changed, so re-tapping the active
+     filter doesn't throw away a swapped-in alternate */
+  if (changed && !filtered.includes(selectedExercise) && filtered.length > 0) selectedExercise = filtered[0];
   chartExercise = selectedExercise;
   render();
 }
