@@ -67,10 +67,62 @@ function renderChart(c) {
     '<div class="metric-btns">' + metricBtns + '</div>' +
     (splitName ? '<div class="split-tag" style="background:' + color + '15;border:1px solid ' + color + '30;color:' + color + '">' + esc(splitName.toUpperCase()) + '</div>' : '') +
     chartHTML + statsHTML +
-    (data.length ? '<div class="map-hint" style="margin-top:10px">Tap a point to pin its details · x-axis is real elapsed time, so gaps show as gaps</div>' : '');
+    (data.length ? '<div class="map-hint" style="margin-top:10px">Tap a point to pin its details · x-axis is real elapsed time, so gaps show as gaps · shaded bands = training phase</div>' : '');
 }
 
 function setMetric(m) { chartMetric = m; render(); }
+
+/* ---- x-axis label thinning --------------------------------------------
+   Both axes are time-based, so stepping by array index bunches labels up
+   wherever the entries cluster. Pick by horizontal distance instead:
+   greedily keep labels at least minGap apart, and always keep the last
+   one, dropping whatever it would have collided with. */
+function pickXLabels(positions, minGap) {
+  const keep = [];
+  positions.forEach((lx, i) => {
+    if (!keep.length || lx - positions[keep[keep.length - 1]] >= minGap) keep.push(i);
+  });
+  const last = positions.length - 1;
+  if (keep[keep.length - 1] !== last) {
+    while (keep.length && positions[last] - positions[keep[keep.length - 1]] < minGap) keep.pop();
+    keep.push(last);
+  }
+  return new Set(keep);
+}
+
+/* ---- phase background bands -------------------------------------------
+   Shared by both chart builders. Takes a date->x mapper and the plot box,
+   returns one <rect> per phase segment clipped to the visible window, a
+   divider at each transition, and a label in any band wide enough to hold
+   one. Bands are drawn first so everything else sits on top of them. */
+function phaseBandsSVG(xOf, d0, d1, top, h, xMin, xMax) {
+  if (!Array.isArray(phases) || !phases.length || d1 <= d0) return '';
+  const today = isoToday();
+  const clampD = d => (d < d0 ? d0 : d > d1 ? d1 : d);
+  const clampX = v => (v < xMin ? xMin : v > xMax ? xMax : v);
+  let out = '';
+  phases.forEach((s, i) => {
+    const m = PHASE_META[s.phase];
+    if (!m) return;
+    const rawEnd = i + 1 < phases.length ? phases[i + 1].since : (today > d1 ? today : d1);
+    if (rawEnd <= d0 || s.since >= d1) return;          /* wholly outside the window */
+    const xa = clampX(xOf(clampD(s.since)));
+    const xb = clampX(xOf(clampD(rawEnd)));
+    const w = xb - xa;
+    if (w < 0.5) return;
+    out += '<rect x="' + xa.toFixed(1) + '" y="' + top + '" width="' + w.toFixed(1) + '" height="' + h +
+      '" fill="' + m.color + '" fill-opacity="0.07"/>';
+    if (i > 0 && xa > xMin + 0.5) {
+      out += '<line x1="' + xa.toFixed(1) + '" y1="' + top + '" x2="' + xa.toFixed(1) + '" y2="' + (top + h) +
+        '" stroke="' + m.color + '" stroke-opacity="0.45" stroke-width="1"/>';
+    }
+    if (w > 46) {
+      out += '<text x="' + (xa + 6).toFixed(1) + '" y="' + (top + 12) + '" fill="' + m.color +
+        '" fill-opacity="0.65" font-size="9" letter-spacing="1">' + m.label + '</text>';
+    }
+  });
+  return out;
+}
 
 function buildSVGChart(data, metric, color) {
   const W = 620, H = 360;
@@ -89,6 +141,10 @@ function buildSVGChart(data, metric, color) {
   const xs = data.map((d, i) => data.length === 1 ? pad.left + cw / 2 : pad.left + ((ts[i] - t0) / tSpan) * cw);
   function x(i) { return xs[i]; }
   function y(v) { return pad.top + ch - ((v - minV) / (maxV - minV)) * ch; }
+  const bands = data.length > 1
+    ? phaseBandsSVG(d => pad.left + ((new Date(d + 'T12:00:00').getTime() - t0) / tSpan) * cw,
+        data[0].date, data[data.length - 1].date, pad.top, ch, pad.left, W - pad.right)
+    : '';
   let gridSVG = '';
   for (let i = 0; i <= 5; i++) {
     const gy = pad.top + (i / 5) * ch;
@@ -98,13 +154,10 @@ function buildSVGChart(data, metric, color) {
     gridSVG += '<text x="' + (pad.left - 8) + '" y="' + (gy + 3) + '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="end">' + gv.toLocaleString() + '</text>';
   }
   let xlabels = '';
-  let lastLabelX = -999;
+  const keepX = pickXLabels(xs, 48);
   data.forEach((d, i) => {
-    const px = x(i);
-    if (px - lastLabelX < 48 && i !== data.length - 1) return;
-    if (i === data.length - 1 && px - lastLabelX < 30) return;
-    lastLabelX = px;
-    xlabels += '<text x="' + px.toFixed(1) + '" y="' + (H - pad.bottom + 20) + '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="middle">' + formatDate(d.date) + '</text>';
+    if (!keepX.has(i)) return;
+    xlabels += '<text x="' + x(i).toFixed(1) + '" y="' + (H - pad.bottom + 20) + '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="middle">' + formatDate(d.date) + '</text>';
   });
   let path = '';
   data.forEach((d, i) => { path += (i === 0 ? 'M' : 'L') + x(i).toFixed(1) + ',' + y(values[i]).toFixed(1); });
@@ -153,7 +206,7 @@ function buildSVGChart(data, metric, color) {
     '<defs><linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">' +
     '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.15"/><stop offset="100%" stop-color="' + color + '" stop-opacity="0.01"/>' +
     '</linearGradient></defs>' +
-    gridSVG + xlabels +
+    bands + gridSVG + xlabels +
     '<path d="' + area + '" fill="url(#areaGrad)"/>' +
     '<path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>' +
     prLine + dots + hoverAreas +
@@ -253,7 +306,8 @@ function renderBWChart(c) {
     '<div class="split-tag" style="background:' + BW_COLOR + '15;border:1px solid ' + BW_COLOR + '30;color:' + BW_COLOR + '">BODYWEIGHT</div>' +
     body + stats +
     '<div class="map-hint" style="margin-top:10px">Solid line = trailing 14-day average, the number to steer by · ' +
-      'faint dots = daily weigh-ins' + (bwGoal ? ' · dashed green = goal ' + bwGoal + ' lb' : ' · set a goal under PHASE → HISTORY') + '</div>' +
+      'faint dots = daily weigh-ins · shaded bands = training phase' +
+      (bwGoal ? ' · dashed green = goal ' + bwGoal + ' lb' : ' · set a goal under PHASE → HISTORY') + '</div>' +
     '<div class="data-btns" style="margin-top:12px"><button class="data-btn" onclick="openPhaseHistory()">⏱ EDIT WEIGH-INS</button></div>';
 }
 
@@ -271,6 +325,7 @@ function buildBWSVGChart(rows, roll, goal) {
   const pv = (maxV - minV) * 0.12; minV -= pv; maxV += pv;
   function x(d) { return pad.left + ((new Date(d + 'T12:00:00').getTime() - t0) / span) * cw; }
   function y(v) { return pad.top + ch - ((v - minV) / (maxV - minV)) * ch; }
+  const bands = phaseBandsSVG(x, rows[0].date, rows[rows.length - 1].date, pad.top, ch, pad.left, W - pad.right);
 
   let grid = '';
   for (let i = 0; i <= 5; i++) {
@@ -281,11 +336,11 @@ function buildBWSVGChart(rows, roll, goal) {
       '<text x="' + (pad.left - 8) + '" y="' + (gy + 3) + '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="end">' + gv + '</text>';
   }
   let xlabels = '';
-  const step = Math.max(1, Math.ceil(rows.length / 10));
+  const keepX = pickXLabels(rows.map(r => x(r.date)), 48);
   rows.forEach((r, i) => {
-    if (i % step === 0 || i === rows.length - 1)
-      xlabels += '<text x="' + x(r.date).toFixed(1) + '" y="' + (H - pad.bottom + 20) +
-        '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="middle">' + formatDate(r.date) + '</text>';
+    if (!keepX.has(i)) return;
+    xlabels += '<text x="' + x(r.date).toFixed(1) + '" y="' + (H - pad.bottom + 20) +
+      '" fill="rgba(255,255,255,0.3)" font-size="10" text-anchor="middle">' + formatDate(r.date) + '</text>';
   });
 
   const dots = rows.map(r =>
@@ -294,8 +349,6 @@ function buildBWSVGChart(rows, roll, goal) {
 
   let line = '';
   roll.forEach((r, i) => { line += (i === 0 ? 'M' : 'L') + x(r.date).toFixed(1) + ',' + y(r.w).toFixed(1); });
-  const area = line + ' L' + x(roll[roll.length - 1].date).toFixed(1) + ',' + (pad.top + ch) +
-    ' L' + x(roll[0].date).toFixed(1) + ',' + (pad.top + ch) + ' Z';
 
   let goalLine = '';
   if (goal > 0 && goal >= minV && goal <= maxV) {
@@ -305,12 +358,9 @@ function buildBWSVGChart(rows, roll, goal) {
       '<text x="' + (W - pad.right + 4) + '" y="' + (gy + 3) + '" fill="rgba(46,204,113,0.7)" font-size="9">' + goal + '</text>';
   }
 
+  /* no area fill here — the phase bands own the background */
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="display:block;max-width:' + W + 'px;overflow:visible">' +
-    '<defs><linearGradient id="bwGrad" x1="0" y1="0" x2="0" y2="1">' +
-    '<stop offset="0%" stop-color="' + BW_COLOR + '" stop-opacity="0.16"/>' +
-    '<stop offset="100%" stop-color="' + BW_COLOR + '" stop-opacity="0.01"/></linearGradient></defs>' +
-    grid + xlabels +
-    '<path d="' + area + '" fill="url(#bwGrad)"/>' +
+    bands + grid + xlabels +
     '<path d="' + line + '" fill="none" stroke="' + BW_COLOR + '" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>' +
     goalLine + dots + '</svg>';
 }

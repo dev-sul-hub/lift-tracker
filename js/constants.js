@@ -1,7 +1,7 @@
 /* ============================================================
    SECTION: CONFIG & CONSTANTS
    ============================================================ */
-const APP_VERSION = '2.5.1';
+const APP_VERSION = '2.6.0';
 
 /* bodyweight pseudo-series (chart tab) */
 const BW_KEY = '__BW__';
