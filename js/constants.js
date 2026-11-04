@@ -1,7 +1,7 @@
 /* ============================================================
    SECTION: CONFIG & CONSTANTS
    ============================================================ */
-const APP_VERSION = '2.6.1';
+const APP_VERSION = '2.7.0';
 
 /* bodyweight pseudo-series (chart tab) */
 const BW_KEY = '__BW__';
@@ -44,6 +44,13 @@ const LEGACY_RENAMES = {
 /* e1RM reps beyond this are extrapolation, not estimation — Epley is
    reasonable to ~10-12 reps and inflates badly past that (200x20 "=" 333 lb) */
 const E1RM_REP_CAP = 12;
+
+/* Reps in reserve on the LAST set only — one value per exercise, not per
+   set. Per-set RIR is 18 extra inputs at 5am and never gets filled in.
+   Self-reported RIR is least accurate far from failure, so the scale stops
+   at 5+: past that the number carries no information worth storing. */
+const RIR_CHOICES = [0, 1, 2, 3, 4, 5];
+const RIR_COLOR = '#ff9f5a';
 
 const MUSCLES = {
   chest_upper: 'Upper Chest', chest_lower: 'Lower Chest',

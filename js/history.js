@@ -182,6 +182,13 @@ function renderHistoryEntry(entry) {
       '<div style="margin-bottom:12px">' + editSets + '</div>' +
       '<div style="margin-bottom:12px"><div class="edit-label">DATE</div>' +
         '<input class="edit-input" type="date" id="edit-date" value="' + entry.date + '" style="width:180px;font-size:11px"></div>' +
+        '<div><div class="edit-label">RIR — LAST SET</div>' +
+          '<select class="edit-input" id="edit-rir" style="width:120px;font-size:11px">' +
+            '<option value=""' + (entry.rir == null ? ' selected' : '') + '>— none</option>' +
+            RIR_CHOICES.map(function (v) {
+              return '<option value="' + v + '"' + (entry.rir === v ? ' selected' : '') + '>' + v + (v === 5 ? '+' : '') + '</option>';
+            }).join('') +
+          '</select></div>' +
       '<div style="margin-bottom:12px"><div class="edit-label">NOTE</div>' +
         '<input class="edit-input" type="text" id="edit-note" maxlength="200" value="' + esc(entry.note || '') + '"></div>' +
       '<div style="margin-bottom:12px"><div class="edit-label">PHASE</div>' +
@@ -199,6 +206,7 @@ function renderHistoryEntry(entry) {
       ? '<div class="history-detail">' + esc(cardioDetail(entry)) + '</div>' +
         '<div class="history-sets">' + (entry.vert || 0) + ' vert ft · ' + cardioMiles(entry) + ' mi</div>'
       : '<div class="history-detail">' + entry.weight + 'lb · avg e1RM: ' + entry.e1rm +
+        (entry.rir != null ? ' <span style="color:' + RIR_COLOR + '">· RIR ' + entry.rir + '</span>' : '') +
         (isCapped(entry) ? ' <span style="color:rgba(255,255,255,0.3);font-size:9px">(capped)</span>' : '') + '</div>' +
         '<div class="history-sets">' + esc(setsDisplay(entry)) + '</div>') +
     (entry.note ? '<div class="history-note">' + esc(entry.note) + '</div>' : '') + '</div>' +
@@ -243,6 +251,8 @@ async function saveEdit(id) {
   }
   entry.weight = w; entry.date = d; entry.setData = newSetData;
   entry.note = (document.getElementById('edit-note')?.value || '').trim();
+  const rv = document.getElementById('edit-rir')?.value;
+  if (rv === '' || rv == null) delete entry.rir; else entry.rir = parseInt(rv);
   applyPhaseSelect(entry);
   entry.e1rm = getAvgE1RM(entry); entry.volume = getTotalVolume(entry);
   entry.mod = Date.now();

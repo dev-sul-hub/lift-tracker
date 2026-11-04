@@ -100,11 +100,31 @@ function captureFormVals() {
   if (n) formVals.note = n.value;
 }
 
+/* RIR chips — tapping the active one clears it, so skipping is one tap
+   and never blocks a log. "—" is the explicit no-answer. */
+function rirBtns() {
+  let html = '<button class="num-sets-btn' + (formVals.rir == null ? ' active' : '') +
+    '" onclick="setFormRir(null)" title="not recorded">—</button>';
+  RIR_CHOICES.forEach(v => {
+    const on = formVals.rir === v;
+    html += '<button class="num-sets-btn' + (on ? ' active' : '') + '" onclick="setFormRir(' + v + ')"' +
+      (on ? ' style="border-color:' + RIR_COLOR + ';background:' + RIR_COLOR + '22;color:' + RIR_COLOR + '"' : '') +
+      '>' + v + (v === 5 ? '+' : '') + '</button>';
+  });
+  return html;
+}
+
+function setFormRir(v) {
+  captureFormVals();
+  formVals.rir = (formVals.rir === v) ? null : v;
+  render();
+}
+
 function applyPrefill() {
   /* on exercise change: prefill from last session of that exercise */
   if (prefillFor === selectedExercise) return;
   prefillFor = selectedExercise;
-  formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '' };  /* strain retained for schema only */
+  formVals = { weight: '', reps: {}, strain: false, note: '', incline: '', minutes: '', mph: '', rir: null };  /* strain retained for schema only */
   const last = getLastEntry(selectedExercise);
   if (!last) return;
   if (last.cardio) {
@@ -115,6 +135,9 @@ function applyPrefill() {
     numSets = Math.min(5, Math.max(1, last.setData.length));
     if (!isBWExercise(selectedExercise)) formVals.weight = String(last.weight);
     last.setData.forEach((s, i) => { formVals.reps[i + 1] = String(s.reps); });
+    /* weight and reps prefill because they're a plan; RIR does not,
+       because it's an observation — a carried-forward default would be
+       accepted unthinkingly and the whole series would read 3. */
   }
 }
 
@@ -166,6 +189,7 @@ function renderLog(c) {
 
   let setInputs = '';
   for (let i = 1; i <= numSets; i++) {
+    /* (RIR chips are built by rirBtns(), below the sets row) */
     const v = formVals.reps[i] || '';
     setInputs += '<div class="set-row">' +
       '<span class="set-label">SET ' + i + '</span>' +
@@ -216,6 +240,8 @@ function renderLog(c) {
             ' oninput="updatePreview()">' +
         '</div>' +
         '<div style="margin-bottom:6px"><label class="label">SETS</label><div class="num-sets-row">' + setsBtns + '</div></div>' +
+        '<div style="margin-bottom:6px"><label class="label">RIR — LAST SET <span style="opacity:0.45">(optional)</span></label>' +
+          '<div class="num-sets-row">' + rirBtns() + '</div></div>' +
         '<div class="sets-container"><label class="label">REPS PER SET</label>' + setInputs + '</div>') +
     '<div class="strain-row">' +
       '<input class="input note-input" type="text" id="noteInput" placeholder="note (optional)" maxlength="200"' +
@@ -398,7 +424,8 @@ async function addEntry() {
   const note = (document.getElementById('noteInput')?.value || '').trim();
   const entry = { id: Date.now(), exercise: selectedExercise, weight: w, setData, date: d,
     strain: false, note, phase: phaseForDate(d), profile: currentProfile, mod: Date.now() };
-  entry.e1rm = getAvgE1RM(entry);
+  if (formVals.rir != null) entry.rir = formVals.rir;
+  entry.e1rm = getAvgE1RM(entry);          /* raw — RIR is context, never folded in */
   entry.volume = getTotalVolume(entry);
   /* PR detection — against best avg e1RM before this entry */
   const prev = entries.filter(e => e.exercise === selectedExercise);

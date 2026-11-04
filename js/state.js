@@ -120,6 +120,26 @@ function calcE1RM(w, r) {
   return Math.round(w * (1 + Math.min(r, E1RM_REP_CAP) / 30) * 10) / 10;
 }
 
+/* RIR is recorded but deliberately NOT folded into e1RM.
+
+   Epley needs reps-to-failure, so reps + RIR is the theoretically right
+   input — but E1RM_REP_CAP pins it at 12, and on this dataset the last
+   set is 10 reps at the median. At RIR 3 that caps 63% of sets and at
+   RIR 4 it caps 79%, so the "adjusted" number would read identically
+   whether 2 reps were left or 5. A metric that cannot distinguish its
+   own inputs is worse than no metric, so RIR earns its keep as context
+   on the raw series instead: effort shown next to output, nothing
+   extrapolated, and the e1RM series stays continuous across the release. */
+
+/* mean RIR across an exercise's most recent n entries that carry one */
+function recentRIR(ex, n) {
+  const v = entries.filter(e => e.exercise === ex && e.rir != null && !e.cardio)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-(n || 3)).map(e => e.rir);
+  if (!v.length) return null;
+  return Math.round(v.reduce((s, x) => s + x, 0) / v.length * 10) / 10;
+}
+
 /* true when any set ran past the cap, so the UI can say e1RM is pinned */
 function isCapped(entry) {
   const sd = entry && entry.setData;
@@ -202,10 +222,15 @@ function showToast(msg, opts) {
   opts = opts || {};
   const t = document.getElementById('toast');
   t.style.background = opts.color || 'var(--green)';
-  t.innerHTML = esc(msg) + (opts.undo ? '<button class="undo-btn" onclick="undoDelete()">UNDO</button>' : '');
+  t.innerHTML = esc(msg) +
+    (opts.undo ? '<button class="undo-btn" onclick="undoDelete()">UNDO</button>' : '') +
+    (opts.action ? '<button class="undo-btn" onclick="' + opts.action.onclick + '">' + esc(opts.action.label) + '</button>' : '');
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), opts.duration || 2200);
+  /* duration 0 = sticky; the only dismissal is the action button */
+  if (opts.duration !== 0) {
+    toastTimer = setTimeout(() => t.classList.remove('show'), opts.duration || 2200);
+  }
 }
 
 /* ============================================================
@@ -486,9 +511,37 @@ async function loadData() {
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
   try {
     if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
-      navigator.serviceWorker.register('./sw.js');
+      navigator.serviceWorker.register('./sw.js').then(watchForUpdate);
     }
   } catch (e) {}
+}
+
+/* The worker calls skipWaiting(), so a new version takes over the cache
+   immediately — but THIS page keeps running the JS it booted with until
+   it reloads. Without a prompt that gap is invisible, which is how you
+   end up checking the version number by hand after every deploy. */
+function watchForUpdate(reg) {
+  if (!reg) return;
+  let prompted = false;
+  const prompt = () => {
+    if (prompted) return;
+    prompted = true;
+    showToast('New version ready', { color: 'var(--amber)', duration: 0,
+      action: { label: 'RELOAD', onclick: 'location.reload()' } });
+  };
+  /* a worker already waiting when we booted */
+  if (reg.waiting && navigator.serviceWorker.controller) prompt();
+  reg.addEventListener('updatefound', () => {
+    const sw = reg.installing;
+    if (!sw) return;
+    sw.addEventListener('statechange', () => {
+      /* controller present means this is an update, not the first install */
+      if (sw.state === 'installed' && navigator.serviceWorker.controller) prompt();
+    });
+  });
+  /* belt and braces: the new worker claiming us is the same signal */
+  navigator.serviceWorker.addEventListener('controllerchange', prompt);
+  try { reg.update(); } catch (e) {}
 }
 
 /* ---- retired exercise names -------------------------------------------

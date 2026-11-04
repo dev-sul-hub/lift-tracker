@@ -53,10 +53,16 @@ function renderChart(c) {
         '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div></div>';
     } else {
       const pr = Math.max(...data.map(e => e.e1rm));
+      const rr = recentRIR(chartExercise, 5);
       statsHTML = '<div class="stats-grid">' +
         '<div class="stat-card"><div class="stat-label">PR AVG e1RM</div><div class="stat-value">' + pr + ' lb</div></div>' +
         '<div class="stat-card"><div class="stat-label">LATEST</div><div class="stat-value">' + latest.weight + 'lb · ' + esc(setsShort(latest)) + '</div></div>' +
-        '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div></div>';
+        '<div class="stat-card"><div class="stat-label">ENTRIES</div><div class="stat-value">' + data.length + '</div></div>' +
+        (rr != null
+          ? '<div class="stat-card"><div class="stat-label">AVG RIR (LAST 5)</div><div class="stat-value" style="color:' +
+            (rr >= 3 ? RIR_COLOR : 'var(--green)') + '">' + rr + '</div></div>'
+          : '') +
+        '</div>';
     }
   } else {
     chartHTML = '<div class="empty">No data for ' + esc(chartExercise) + ' yet.<br><span style="font-size:11px">Log some sets to see your progress.</span></div>';
@@ -67,7 +73,8 @@ function renderChart(c) {
     '<div class="metric-btns">' + metricBtns + '</div>' +
     (splitName ? '<div class="split-tag" style="background:' + color + '15;border:1px solid ' + color + '30;color:' + color + '">' + esc(splitName.toUpperCase()) + '</div>' : '') +
     chartHTML + statsHTML +
-    (data.length ? '<div class="map-hint" style="margin-top:10px">Tap a point to pin its details · x-axis is real elapsed time, so gaps show as gaps · shaded bands = training phase</div>' : '');
+    (data.length ? '<div class="map-hint" style="margin-top:10px">Tap a point to pin its details · x-axis is real elapsed time, so gaps show as gaps · ' +
+      'shaded bands = training phase · <span style="color:' + RIR_COLOR + '">orange ring</span> = reps left in reserve, heavier ring = further from failure</div>' : '');
 }
 
 function setMetric(m) { chartMetric = m; render(); }
@@ -165,6 +172,15 @@ function buildSVGChart(data, metric, color) {
   let dots = '';
   data.forEach((d, i) => {
     dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(values[i]).toFixed(1) + '" r="4" fill="' + color + '"/>';
+    /* ring = how close that session's last set ran to failure. Heavier and
+       brighter the further from failure, so effort reads off the same chart
+       as output without anything being folded into the value itself. */
+    if (d.rir != null) {
+      const k = Math.min(d.rir, 5);
+      dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(values[i]).toFixed(1) + '" r="7.5" fill="none" stroke="' +
+        RIR_COLOR + '" stroke-opacity="' + (0.3 + k * 0.14).toFixed(2) +
+        '" stroke-width="' + (1 + k * 0.4).toFixed(1) + '"/>';
+    }
   });
   let prLine = '';
   if (metric === 'e1rm' || metric === 'vert') {

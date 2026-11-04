@@ -125,6 +125,19 @@ function unresolvedWarningHTML() {
     'No muscle tags for these names — add them under MANAGE → custom exercise, or rename the entries.</div></div>';
 }
 
+/* A lift flagged as not progressing while its last sets stopped well short
+   of failure is an effort signal, not a strength ceiling — and the two call
+   for opposite responses (push harder vs back off / deload). Shown wherever
+   the watch flags something, in every phase. */
+function rirNoteHTML(ex) {
+  const rr = recentRIR(ex, 3);
+  if (rr == null) return '';
+  return rr >= 3
+    ? '<div class="stall-detail" style="color:' + RIR_COLOR + '">Last sets averaging RIR ' + rr +
+      ' — stopping short of failure, so this may be effort rather than a ceiling</div>'
+    : '<div class="stall-detail" style="opacity:0.55">Last sets averaging RIR ' + rr + ' — being taken close to failure</div>';
+}
+
 function renderStats(c) {
   const today = new Date().toISOString().split('T')[0];
   const pmv = PHASE_META[phase];
@@ -259,10 +272,12 @@ function renderStats(c) {
       const bestRecent = Math.max(...inPhase.slice(-4).map(e => e.e1rm));
       if (bestRecent >= baseline * 0.9) { held++; return; }
       const pct = Math.round((1 - bestRecent / baseline) * 1000) / 10;
+      /* a lift flagged as down while the last sets stopped 3+ short of
+         failure is an effort signal, not a strength loss — opposite fix */
       stallHTML += '<div class="stall-row" style="border-color:rgba(232,184,58,0.25)">' +
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">Down ' + pct + '% — best this cut ' + bestRecent + ' lb vs pre-cut best ' + baseline + ' lb' +
-        '</div></div>';
+        '</div>' + rirNoteHTML(ex) + '</div>';
     });
     if (total > 0) {
       stallHTML = '<div class="stats-sub" style="margin:0 0 12px;color:' + pm.color + '">' +
@@ -286,7 +301,7 @@ function renderStats(c) {
       stallHTML += '<div class="stall-row">' +
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">Down ' + pct + '% from PR ' + prVal + ' lb · recent best ' + best4 + ' lb' +
-        '</div></div>';
+        '</div>' + rirNoteHTML(ex) + '</div>';
     });
     if (!stallHTML) stallHTML = '<div class="empty" style="padding:24px">Everything within 5% of its best. Maintenance on track.</div>';
   } else {
@@ -307,7 +322,7 @@ function renderStats(c) {
         '<div class="stall-name">' + esc(ex) + '</div>' +
         '<div class="stall-detail">No avg e1RM improvement in last 4 sessions · PR ' + prVal + ' lb on ' + formatDateFull(prEntry.date) +
         ' · ' + since + ' session' + (since === 1 ? '' : 's') + ' since' +
-        '</div></div>';
+        '</div>' + rirNoteHTML(ex) + '</div>';
     });
     if (!stallHTML) stallHTML = '<div class="empty" style="padding:24px">Nothing stalled. Keep going.</div>';
   }
