@@ -109,6 +109,22 @@ function renderVolStrip() {
   return html;
 }
 
+/* warn rather than miscount: an exercise with no library entry contributes
+   zero sets to every volume figure on this tab, silently */
+function unresolvedWarningHTML() {
+  const un = unresolvedExercises();
+  const names = Object.keys(un);
+  if (!names.length) return '';
+  const total = names.reduce((s, n) => s + un[n], 0);
+  return '<div class="stall-row" style="border-color:var(--amber);background:rgba(232,184,58,0.08);margin-bottom:22px">' +
+    '<div style="font-size:10px;letter-spacing:1px;color:var(--amber);margin-bottom:4px">' +
+    total + ' SET' + (total === 1 ? '' : 'S') + ' NOT COUNTED IN VOLUME</div>' +
+    '<div style="font-size:11px;color:rgba(255,255,255,0.55)">' +
+    names.map(n => esc(n) + ' (' + un[n] + ')').join(' · ') +
+    '</div><div style="font-size:10px;color:var(--dim);margin-top:5px">' +
+    'No muscle tags for these names — add them under MANAGE → custom exercise, or rename the entries.</div></div>';
+}
+
 function renderStats(c) {
   const today = new Date().toISOString().split('T')[0];
   const pmv = PHASE_META[phase];
@@ -323,6 +339,7 @@ function renderStats(c) {
   }
 
   c.innerHTML =
+    unresolvedWarningHTML() +
     '<div class="stats-section"><div class="stats-title" style="display:flex;align-items:center;gap:8px"><span style="flex:1">' + volTitle + '</span>' + volToggle + '</div>' +
     '<div class="stats-sub">' + volSub + '</div>' +
     volHTML + '</div>' +

@@ -472,8 +472,12 @@ async function loadData() {
       if (parsed && (parsed.statsVolMode === 'split' || parsed.statsVolMode === 'muscle')) statsVolMode = parsed.statsVolMode;
     }
   } catch (e) {}
+  const renamed = await reconcileExerciseNames();
   initProfile();
   document.getElementById('verLabel').textContent = 'v' + APP_VERSION;
+  if (renamed > 0) {
+    showToast(renamed + ' entr' + (renamed === 1 ? 'y' : 'ies') + ' updated to current exercise names', { duration: 3200 });
+  }
   updateHeader();
   updateToggleUI();
   updatePhaseUI();
@@ -485,6 +489,71 @@ async function loadData() {
       navigator.serviceWorker.register('./sw.js');
     }
   } catch (e) {}
+}
+
+/* ---- retired exercise names -------------------------------------------
+   Map forward anything still carrying a pre-cleanup name, across entries,
+   splits and alternates. Idempotent: a second pass finds nothing, because
+   every target name is absent from LEGACY_RENAMES' keys. */
+async function reconcileExerciseNames() {
+  const to = n => LEGACY_RENAMES[n] || n;
+  let n = 0;
+  entries.forEach(e => {
+    const t = LEGACY_RENAMES[e.exercise];
+    if (!t) return;
+    e.exercise = t;
+    e.mod = Date.now();
+    n++;
+  });
+
+  let cfgChanged = false;
+  ['home', 'gym'].forEach(p => {
+    if (!config[p]) return;
+    Object.keys(config[p]).forEach(s => {
+      const list = config[p][s];
+      if (!Array.isArray(list)) return;
+      if (!list.some(ex => LEGACY_RENAMES[ex])) return;
+      /* rename, then drop any duplicate the rename just created */
+      config[p][s] = list.map(to).filter((ex, i, a) => a.indexOf(ex) === i);
+      cfgChanged = true;
+    });
+  });
+
+  let altsChanged = false;
+  ['home', 'gym'].forEach(p => {
+    const m = alts && alts[p];
+    if (!m) return;
+    Object.keys(m).forEach(k => {
+      const list = Array.isArray(m[k]) ? m[k] : [];
+      const nk = to(k);
+      const nl = list.map(to).filter((ex, i, a) => a.indexOf(ex) === i && ex !== nk);
+      if (nk !== k) { delete m[k]; m[nk] = nl; altsChanged = true; }
+      else if (nl.join('\u0000') !== list.join('\u0000')) { m[k] = nl; altsChanged = true; }
+    });
+  });
+
+  /* a retired name surviving as a custom would re-create the duplicate */
+  const before = customExercises.length;
+  customExercises = customExercises.filter(c => !LEGACY_RENAMES[c && c.n]);
+  const cusChanged = customExercises.length !== before;
+
+  if (n > 0) await saveData();
+  if (cfgChanged) await saveConfig();
+  if (altsChanged) await saveAlts();
+  if (cusChanged) await saveCustoms();
+  if (n > 0 || cfgChanged || altsChanged || cusChanged) await bumpMeta();
+  return n;
+}
+
+/* exercises that have logged sets but no library entry — their volume is
+   being dropped on the floor, so say so rather than silently miscounting */
+function unresolvedExercises() {
+  const out = {};
+  entries.forEach(e => {
+    if (e.cardio || libGet(e.exercise)) return;
+    out[e.exercise] = (out[e.exercise] || 0) + (e.setData ? e.setData.length : (e.sets || 0));
+  });
+  return out;
 }
 
 async function saveData() {
@@ -799,12 +868,17 @@ function prePhaseBaseline(ex) {
   return before.length ? Math.max(...before.map(e => e.e1rm)) : null;
 }
 
+/* the count is scoped to the CURRENT profile's splits, so show the total
+   alongside it — "221 entries" against a 522-entry database reads as a bug */
 function updateHeader() {
   const profileExs = getAllExercises();
   const profileEntries = entries.filter(e => profileExs.includes(e.exercise));
   const exSet = new Set(profileEntries.map(e => e.exercise));
+  const count = profileEntries.length < entries.length
+    ? profileEntries.length + ' / ' + entries.length
+    : String(entries.length);
   document.getElementById('headerStats').textContent =
-    profileEntries.length + ' entries · ' + exSet.size + ' exercises · ' + (currentProfile === 'home' ? 'Home' : 'Gym');
+    count + ' entries · ' + exSet.size + ' exercises · ' + (currentProfile === 'home' ? 'Home' : 'Gym');
 }
 
 function switchTab(tab) {

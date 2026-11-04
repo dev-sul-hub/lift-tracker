@@ -1,7 +1,7 @@
 /* ============================================================
    SECTION: CONFIG & CONSTANTS
    ============================================================ */
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.6.1';
 
 /* bodyweight pseudo-series (chart tab) */
 const BW_KEY = '__BW__';
@@ -18,6 +18,27 @@ const PHASE_META = {
   leangain: { label: 'LEAN GAIN', color: '#a8e83a', blurb: 'slow surplus — volume up, rate capped' },
   cut:      { label: 'CUT',      color: '#3a8ee8', blurb: 'goal is retention, not PRs' },
   maintain: { label: 'MAINTAIN', color: '#e8b83a', blurb: 'hold the line' }
+};
+
+/* Names retired by the October 2026 library cleanup. An entry logged under
+   an old name resolves to nothing in the library, so libGet() returns null
+   and muscleSetsInRange() drops its sets silently — the work happened but
+   never reaches the volume bands. Mapped forward on load, which also heals
+   any old backup that gets re-imported later. */
+const LEGACY_RENAMES = {
+  'Reverse Pec Deck':          'Rear Delt Machine',
+  'Seated Calf Raise Machine': 'Calf Press (Leg Press)',
+  'Ab Crunch':                 'Ab Crunch Machine',
+  'Ab Machine':                'Lying Ab Machine',
+  'Lat Pulldown':              'Machine Pulldown',
+  'Lateral Raise':             'DB Lateral Raise',
+  'Machine Press':             'Flat Machine Press',
+  'Pec Deck Machine':          'Pec Deck',
+  'Incline Machine Press':     'Incline Press (Plate)',
+  'Cable Fly':                 'Seated Cable Fly',
+  'Decline Bench Press':       'Decline Machine Press',
+  'Reverse tricep pull down':  'Reverse Grip Pushdown',
+  'Tricep extension machine':  'Tricep Extension Machine'
 };
 
 /* e1RM reps beyond this are extrapolation, not estimation — Epley is
